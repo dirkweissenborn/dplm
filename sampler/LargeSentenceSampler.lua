@@ -37,9 +37,9 @@ function LargeSentenceSampler:_sampleEpoch(dataset)
   local sentenceTable = {}
   for size, s in pairs(sentenceTable_) do
     max = math.max(max,size)
-    sentenceTable[size] = {indices=s.indices:resize(s.count), sampleIdx=1}
+    sentenceTable[size] = {indices=s.indices:resize(s.count), sampleIdx=1 }
   end
-  
+
   -- put left overs of smaller sentences together with next bigger sentences to always have batch_size batches
   local left_overs = {}
   for l=1,max do
@@ -48,26 +48,28 @@ function LargeSentenceSampler:_sampleEpoch(dataset)
       local count = s.indices:size(1)
       local left_over_count = count % self._batch_size
       if left_over_count > 0 then
-        if (left_over_count+#left_overs) >= self._batch_size then
+        local nLeftOvers = #left_overs
+        if (left_over_count+nLeftOvers) >= self._batch_size then
           local additional = self._batch_size - left_over_count
-          local old_indices = s.indices:clone()
-          s.indices:resize(count + additional)
+          local old_indices = s.indices
+          s.indices = torch.zeros(count + additional)
           s.indices:sub(1,count):copy(old_indices)
           --fill with left overs
           for i=1, additional do
             s.indices[count+i] = left_overs[i]
           end
           --remove extracted left overs
-          for i= additional +1, #left_overs do
-            left_overs[i- additional] = left_overs[i]
+          for i= 1, additional do left_overs[i] = nil end
+          for i= additional +1, nLeftOvers do
+            left_overs[i-additional] = left_overs[i]
             left_overs[i] = nil
-          end  
-        else --cannot fill this up with leftovers
+          end
+        else --cannot fill this up with leftovers -> move leftovers of this sentence size to global leftovers
           for i=1, left_over_count do
             table.insert(left_overs, s.indices[-i])
           end
-          if count > left_over_count then
-            s.indices:narrow(1,1,count-left_over_count)
+          if count > left_over_count then --more than one batch
+            s.indices = s.indices:resize(count-left_over_count)
           else
             sentenceTable[l] = nil
           end
