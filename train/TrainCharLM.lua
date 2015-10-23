@@ -164,8 +164,11 @@ lm:insert(nn.SplitTable(1,2), 1) -- tensor to table of tensors
 if opt.dropout > 0 then
   lm:insert(nn.Dropout(opt.dropout), 1)
 end
-
-lookup = nn.LookupTable(ds:vocabularySize(), opt.hiddenSize[1])
+if type(opt.hiddenSize[1]) == "table" then
+  lookup = nn.LookupTable(ds:vocabularySize(), opt.hiddenSize[1][1])
+else
+  lookup = nn.LookupTable(ds:vocabularySize(), opt.hiddenSize[1])
+end
 lookup.maxOutNorm = -1 -- disable maxParamNorm on the lookup table
 lm:insert(lookup, 1)
 
