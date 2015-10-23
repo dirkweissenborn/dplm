@@ -13,7 +13,7 @@ cmd:text("$> th recurrentlanguagemodel.lua --dataPath /path/to/data --cuda --use
 cmd:text('Options:')
 cmd:option('--learningRate', 1e-2, 'learning rate at t=0')
 cmd:option('--minLR', 1e-4, 'minimal learning rate')
-cmd:option('--maxWait', 2, 'maximum number of epochs to wait for a new minima to be found. After that, the learning rate is decayed by decayFactor.')
+cmd:option('--maxWait', 0, 'maximum number of epochs to wait for a new minima to be found. After that, the learning rate is decayed by decayFactor.')
 cmd:option('--decayFactor', 0.5, 'factor by which learning rate is decayed for adaptive decay.')
 cmd:option('--gradClip', 5, 'max magnitude of individual grad params')
 cmd:option('--batchSize', 64, 'number of examples per batch')
@@ -103,6 +103,9 @@ end
 lm = nn.Sequential()
 
 local inputSize = opt.hiddenSize[1]
+if type(inputSize) == "table" then
+  inputSize = inputSize[1]
+end
 for i,hiddenSize in ipairs(opt.hiddenSize) do
   local is_lstm = opt.lstm
   if type(hiddenSize) == "table" then
@@ -199,7 +202,7 @@ lm:remember('both')
 
 
 --[[Propagators]]--
-ad = dp.AdaptiveDecay{max_wait = opt.maxWait, decay_factor=opt.decayFactor}
+ad = dp.ThresholdedAdaptiveDecay{max_wait = opt.maxWait, decay_factor=opt.decayFactor}
 
 optim_state = {learningRate = opt.learningRate, beta1 = 0 }
 
@@ -218,11 +221,12 @@ train = dp.Optimizer{
   ),
   epoch_callback = function(model, report) -- called every epoch
     if report.epoch > 0 then
-      optim_state.learningRate = optim_state.learningRate*ad.decay
-      ad.decay = 1
-      opt.learningRate = math.max(opt.minLR, opt.learningRate)
+      if ad.decay ~= 1 then
+        optim_state.learningRate = optim_state.learningRate*ad.decay
+        optim_state.learningRate = math.max(opt.minLR, optim_state.learningRate)
+      end
       if not opt.silent then
-        print("learningRate", opt.learningRate)
+        print("learningRate", optim_state.learningRate)
         if opt.meanNorm then
           print("mean gradParam/param norm", opt.meanNorm)
         end
