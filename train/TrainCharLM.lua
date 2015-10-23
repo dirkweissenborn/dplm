@@ -25,6 +25,8 @@ cmd:option('--progress', false, 'print progress bar')
 cmd:option('--silent', false, 'dont print anything to stdout')
 cmd:option('--xpPath', '', 'path to a previously saved model')
 cmd:option('--uniform', 8e-2, 'initialize parameters using uniform distribution between -uniform and uniform. -1 means default initialization')
+cmd:option('--id',dp.uniqueID(),'name of experiment, defaults to dp.uniqueID() generator')
+cmd:option('--log',dp.SAVE_DIR,'path of log directory')
 
 --[[ recurrent layer ]]--
 cmd:option('--lstm', false, 'use Long Short Term Memory (nn.LSTM instead of nn.Recurrent)')
@@ -39,7 +41,7 @@ cmd:option('--trainEpochSize', 400000, 'number of train examples seen between ea
 --cmd:option('--validEpochSize', 24000, 'number of valid examples used for early stopping and cross-validation')
 cmd:option('--trainOnly', false, 'forget the validation and test sets, focus on the training set')
 cmd:option('--dataPath', '', 'path to data directory')
-cmd:option('--split_fractions', '{0.9,0.1,0}',  'fractions of dataset used for train/valid/test')
+cmd:option('--split_fractions', '{1,0,0}',  'fractions of dataset used for train/valid/test')
 cmd:option('--useText', false,  'use textset instead of sentenceset')
 cmd:option('--max_size', 1000,  'when using sentence level training, this is where sentences are cut off.')
 
@@ -49,8 +51,13 @@ cmd:option('--modelFile','','path to write final model to')
 
 cmd:text()
 opt = cmd:parse(arg or {})
+print("Starting experiment: " .. opt.id)
 opt.hiddenSize = dp.returnString(opt.hiddenSize)
 opt.split_fractions = dp.returnString(opt.split_fractions)
+if opt.split_fractions[1] == 1 then 
+  opt.trainOnly = true
+  print "Training only, because split fraction for training set to 1!"
+end
 if not opt.silent then
   table.print(opt)
 end
@@ -233,8 +240,8 @@ train = dp.Optimizer{
 }
 
 if not opt.trainOnly then
-  local valid_sampler = opt.useText and dp.TextSampler{epoch_size = opt.trainEpochSize, batch_size = opt.batchSize}
-      or dplm.LargeSentenceSampler{epoch_size = opt.trainEpochSize, batch_size = opt.batchSize, max_size=opt.max_size,
+  local valid_sampler = opt.useText and dp.TextSampler{epoch_size = -1, batch_size = opt.batchSize}
+      or dplm.LargeSentenceSampler{epoch_size = -1, batch_size = opt.batchSize, max_size=opt.max_size, 
     max_batch_length = opt.rho}
   valid = dp.Evaluator{
     feedback = dp.Perplexity(),
@@ -248,13 +255,14 @@ end
 
 --[[Experiment]]--
 xp = dp.Experiment{
+  id=dp.ObjectID(opt.id),
   model = lm,
   optimizer = train,
   validator = valid,
   --tester = tester,
   observer = {
     ad,
-    dp.FileLogger(),
+    dp.FileLogger(opt.log),
     dp.EarlyStopper{
       max_epochs = opt.maxTries,
       error_report={opt.trainOnly and 'optimizer' or 'validator','feedback','perplexity','ppl'}
@@ -288,3 +296,4 @@ if opt.modelFile ~= '' then
   torch.save(opt.modelFile, model)
   print("CharLM saved to " .. opt.modelFile)
 end
+
