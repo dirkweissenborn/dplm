@@ -104,14 +104,19 @@ lm = nn.Sequential()
 
 local inputSize = opt.hiddenSize[1]
 for i,hiddenSize in ipairs(opt.hiddenSize) do
+  local is_lstm = opt.lstm
+  if type(hiddenSize) == "table" then
+    is_lstm = hiddenSize[2] ~= "rnn"
+    hiddenSize = hiddenSize[1]
+  end
 
-  if i~= 1 and not opt.lstm then
+  if i~= 1 and not is_lstm then
     lm:add(nn.Sequencer(nn.Linear(inputSize, hiddenSize)))
   end
 
   -- recurrent layer
   local rnn
-  if opt.lstm then
+  if is_lstm then
     -- Long Short Term Memory
     rnn = nn.Sequencer(nn.FastLSTM(inputSize, hiddenSize))
   else
