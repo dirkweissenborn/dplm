@@ -125,7 +125,7 @@ for i,hiddenSize in ipairs(opt.hiddenSize) do
       hiddenSize, -- first step will use nn.Add
       nn.Identity(), -- for efficiency (see above input layer)
       nn.Linear(hiddenSize, hiddenSize), -- feedback layer (recurrence)
-      nn.Sigmoid(), -- transfer function
+      nn.Tanh(), -- transfer function
       99999 -- maximum number of time-steps per sequence
     )
     if opt.zeroFirst then
