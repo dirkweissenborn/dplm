@@ -13,7 +13,7 @@ torch.include('dplm', 'feedback/LossFeedback.lua')
 torch.include('dplm', 'model/SwitchCriterion.lua')
 
 -- Disambiguation
-torch.include('dplm', 'el/Lexicon.lua')
+torch.include('dplm', 'el/DBMap.lua')
 torch.include('dplm', 'el/Disambiguator.lua')
 torch.include('dplm', 'data/AIDALoader.lua')
 

@@ -2,8 +2,8 @@
 local Disambiguator = torch.class("dplm.Disambiguator")
 
 function Disambiguator:__init(candmap, facts, model, args)
-  self._candmap = dplm.Lexicon(candmap)
-  self._facts = dplm.Lexicon(facts)
+  self._candmap = dplm.DBMap(candmap)
+  self._facts = dplm.DBMap(facts)
   self._lm = torch.load(model)
 
   -- adaption parameters

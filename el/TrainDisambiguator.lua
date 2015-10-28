@@ -59,8 +59,8 @@ lm:remember('both')
 -- load data ---------------------------------------
 local corpus = dplm.AIDALoader(opt.dataDir)
 
-corpus.train = tablex.sub(corpus.train,1,100)
-corpus.valid   = tablex.sub(corpus.valid,1,1)
+--corpus.train = tablex.sub(corpus.train,1,10)
+--corpus.valid   = tablex.sub(corpus.valid,1,10)
 
 -- extract candidates ------------------------------
 function extract_candidates(corpus,t)
