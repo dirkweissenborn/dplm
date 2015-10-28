@@ -1,5 +1,3 @@
-require 'dp'
-require 'rnn'
 require 'optim'
 require 'dplm'
 
@@ -41,9 +39,9 @@ cmd:option('--trainEpochSize', 400000, 'number of train examples seen between ea
 --cmd:option('--validEpochSize', 24000, 'number of valid examples used for early stopping and cross-validation')
 cmd:option('--trainOnly', false, 'forget the validation and test sets, focus on the training set')
 cmd:option('--dataPath', '', 'path to data directory')
-cmd:option('--split_fractions', '{1,0,0}',  'fractions of dataset used for train/valid/test')
+cmd:option('--splitFractions', '{1,0,0}',  'fractions of dataset used for train/valid/test')
 cmd:option('--useText', false,  'use textset instead of sentenceset')
-cmd:option('--max_size', 1000,  'when using sentence level training, this is where sentences are cut off.')
+cmd:option('--maxSize', 1000,  'when using sentence level training, this is where sentences are cut off.')
 
 --[[ Model file ]]--
 cmd:option('--modelFile','','path to write final model to')
@@ -53,8 +51,8 @@ cmd:text()
 opt = cmd:parse(arg or {})
 print("Starting experiment: " .. opt.id)
 opt.hiddenSize = dp.returnString(opt.hiddenSize)
-opt.split_fractions = dp.returnString(opt.split_fractions)
-if opt.split_fractions[1] == 1 then 
+opt.splitFractions = dp.returnString(opt.splitFractions)
+if opt.splitFractions[1] == 1 then
   opt.trainOnly = true
   print "Training only, because split fraction for training set to 1!"
 end
@@ -74,10 +72,10 @@ if opt.xpPath ~= '' then
   assert(paths.filep(opt.xpPath), opt.xpPath..' does not exist')
 end
 
-ds = dplm.CharSource{
+ds = dplm.SplitCharSource{
   context_size=1, --opt.bidirectional and opt.rho+1 or opt.rho,
   recurrent=true, bidirectional=opt.bidirectional,
-  name='rnnlm', data_path = opt.dataPath, split_fractions = opt.split_fractions,
+  name='rnnlm', data_path = opt.dataPath, split_fractions = opt.splitFractions,
   sentence= not opt.useText, context_size=opt.bidirectional and opt.rho+1 or opt.rho
 }
 
@@ -210,8 +208,8 @@ local params, grad_params -- initialized later, after it is clear which device i
 local charlm = dplm.CharLM(lm,ds.vocab)
 
 local training_sampler = opt.useText and dp.TextSampler{epoch_size = opt.trainEpochSize, batch_size = opt.batchSize}
-    or dplm.LargeSentenceSampler{epoch_size = opt.trainEpochSize, batch_size = opt.batchSize, max_size=opt.max_size, 
-      max_batch_length = opt.rho}
+    or dplm.LargeSentenceSampler{epoch_size = opt.trainEpochSize, batch_size = opt.batchSize, max_size=opt.maxSize,
+      context_size = opt.rho}
 
 train = dp.Optimizer{
   loss = nn.ModuleCriterion(
@@ -239,7 +237,7 @@ train = dp.Optimizer{
   end,
   callback = function(model, report) -- called every batch
     grad_params:clamp(-opt.gradClip,opt.gradClip)
-    optim.adam(function(x) return report.loss, grad_params end,params,optim_state)
+    optim.adam(function(x) return report.loss, grad_params end, params, optim_state)
     local norm = grad_params:norm() -- / params:norm()
     opt.meanNorm = opt.meanNorm and (opt.meanNorm*0.9 + norm*0.1) or norm
     --model:maxParamNorm(opt.maxOutNorm) -- affects params
@@ -253,8 +251,8 @@ train = dp.Optimizer{
 
 if not opt.trainOnly then
   local valid_sampler = opt.useText and dp.TextSampler{epoch_size = -1, batch_size = opt.batchSize}
-      or dplm.LargeSentenceSampler{epoch_size = -1, batch_size = opt.batchSize, max_size=opt.max_size, 
-    max_batch_length = opt.rho}
+      or dplm.LargeSentenceSampler{epoch_size = -1, batch_size = opt.batchSize, max_size=opt.maxSize,
+      context_size = opt.rho}
   valid = dp.Evaluator{
     feedback = dp.Perplexity(),
     sampler = valid_sampler,
@@ -305,7 +303,7 @@ xp:run(ds)
 
 if opt.modelFile ~= '' then 
   local model = dplm.CharLM(lm,ds.vocab)
-  torch.save(opt.modelFile, model)
+  model:save(opt.modelFile)
   print("CharLM saved to " .. opt.modelFile)
 end
 

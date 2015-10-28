@@ -11,8 +11,9 @@ function LargeSentenceSampler:__init(config)
   parent.__init(self, config)
   -- the billion words validation set has a sentence of 820 words???
   -- but the test set is alright
-  self._max_batch_length = config.max_batch_length or 999999999999
   self._max_size = config.max_size or 999999999999
+  self._context_size = config.context_size or 999999999999
+  self._shuffle = config.shuffle or true
 end
 
 function LargeSentenceSampler:_sampleEpoch(dataset)
@@ -23,7 +24,7 @@ function LargeSentenceSampler:_sampleEpoch(dataset)
   local sentenceTable_, corpus = dataset:groupBySize()
   local text = corpus:select(2,2) -- second column is the text
 
-  -- !!!do not!!! remove sentences of size > self._max_size
+  -- remove sentences of size > self._max_size --> we process them also batch wise
   --[[sentenceTable_ = _.map(sentenceTable_,
     function(k,v)
       if k <= self._max_size then
@@ -42,40 +43,50 @@ function LargeSentenceSampler:_sampleEpoch(dataset)
 
   -- put left overs of smaller sentences together with next bigger sentences to always have batch_size batches
   local left_overs = {}
-  for l=1,max do
-    local s = sentenceTable[l]
-    if s then
-      local count = s.indices:size(1)
-      local left_over_count = count % self._batch_size
-      if left_over_count > 0 then
-        local nLeftOvers = #left_overs
-        if (left_over_count+nLeftOvers) >= self._batch_size then
-          local additional = self._batch_size - left_over_count
-          local old_indices = s.indices
-          s.indices = torch.zeros(count + additional)
-          s.indices:sub(1,count):copy(old_indices)
-          --fill with left overs
-          for i=1, additional do
-            s.indices[count+i] = left_overs[i]
-          end
-          --remove extracted left overs
-          for i= 1, additional do left_overs[i] = nil end
-          for i= additional +1, nLeftOvers do
-            left_overs[i-additional] = left_overs[i]
-            left_overs[i] = nil
-          end
-        else --cannot fill this up with leftovers -> move leftovers of this sentence size to global leftovers
-          for i=1, left_over_count do
-            table.insert(left_overs, s.indices[-i])
-          end
-          if count > left_over_count then --more than one batch
-            s.indices = s.indices:resize(count-left_over_count)
-          else
-            sentenceTable[l] = nil
+  if max > 1 then
+    for l=1,max-1 do
+      local s = sentenceTable[l]
+      if s then
+        local count = s.indices:size(1)
+        local left_over_count = count % self._batch_size
+        if left_over_count > 0 then
+          local nLeftOvers = #left_overs
+          if (left_over_count+nLeftOvers) >= self._batch_size then
+            local additional = self._batch_size - left_over_count
+            local old_indices = s.indices
+            s.indices = torch.zeros(count + additional)
+            s.indices:sub(1,count):copy(old_indices)
+            --fill with left overs
+            for i=1, additional do
+              s.indices[count+i] = left_overs[i]
+            end
+            --remove extracted left overs
+            for i= 1, additional do left_overs[i] = nil end
+            for i= additional +1, nLeftOvers do
+              left_overs[i-additional] = left_overs[i]
+              left_overs[i] = nil
+            end
+          else --cannot fill this up with leftovers -> move leftovers of this sentence size to global leftovers
+            for i=1, left_over_count do
+              table.insert(left_overs, s.indices[-i])
+            end
+            if count > left_over_count then --more than one batch
+              s.indices = s.indices:resize(count-left_over_count)
+            else
+              sentenceTable[l] = nil
+            end
           end
         end
       end
-    end  
+    end
+    -- the rest goes into the max bucket
+    local s = sentenceTable[max]
+    local count = s.indices:size(1)
+    local old_indices = s.indices
+    s.indices = torch.zeros(count + #left_overs)
+    s.indices:sub(1,count):copy(old_indices)
+    --fill with left overs
+    for i=1, #left_overs do s.indices[count+i] = left_overs[i] end
   end
 
   local nSample = 0
@@ -103,7 +114,8 @@ function LargeSentenceSampler:_sampleEpoch(dataset)
       s.sampleIdx=1
     end
     
-    local sentenceSizes = _.shuffle(_.keys(sentenceTable))
+    local sentenceSizes = _.sort(_.keys(sentenceTable))
+    if self._shuffle then sentenceSizes = _.shuffle(sentenceSizes) end
     local nSizes = #sentenceSizes
 
     while nSizes > 0 do
@@ -155,20 +167,20 @@ function LargeSentenceSampler:_sampleEpoch(dataset)
         end
 
         inputs = inputs:narrow(2, 1, sentenceSize)
-
         nSampled = nSampled + textIndices:size(1)
+
         input_v:setClasses(dataset:vocabulary())
         target_v:setClasses(dataset:vocabulary())
-        
-        for i=1, math.ceil(sentenceSize/self._max_batch_length) do
-          local offset = (i-1)*self._max_batch_length
-          local end_i = math.min(sentenceSize, offset + self._max_batch_length)
+        for i=1, math.ceil(sentenceSize/self._context_size) do
+          local offset = (i-1)*self._context_size
+          local end_i = math.min(sentenceSize, offset + self._context_size)
           -- re-encapsulate in dp.Views
           input_v:forward('bt', inputs:sub(1,-1,offset+1,end_i))
           target_v:forward('bt', targets:sub(1,-1,offset+1,end_i))
           self._end_of_batch = end_i == sentenceSize
           coroutine.yield(batch, math.min(nSampled, epochSize), epochSize)
         end
+
 
         if nSampled >= epochSize then
           batch = coroutine.yield(false)
