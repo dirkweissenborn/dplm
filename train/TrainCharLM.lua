@@ -44,7 +44,8 @@ cmd:option('--useText', false,  'use textset instead of sentenceset')
 cmd:option('--maxSize', 1000,  'when using sentence level training, this is where sentences are cut off.')
 
 --[[ Model file ]]--
-cmd:option('--modelFile','','path to write final model to')
+cmd:option('--modelFile','','path to load and/or write final model to/from')
+cmd:option('--overwrite',false,'overwrite existing model with new one')
 
 
 cmd:text()
@@ -96,107 +97,115 @@ if opt.xpPath ~= '' then
 end
 
 --[[Model]]--
-
+local charlm
 -- language model
-lm = nn.Sequential()
+if not paths.filep(opt.modelFile) or opt.overwrite then
+    local lm = nn.Sequential()
 
-local inputSize = opt.hiddenSize[1]
-if type(inputSize) == "table" then
-  inputSize = inputSize[1]
-end
-for i,hiddenSize in ipairs(opt.hiddenSize) do
-  local is_lstm = opt.lstm
-  if type(hiddenSize) == "table" then
-    is_lstm = hiddenSize[2] ~= "rnn"
-    hiddenSize = hiddenSize[1]
-  end
-
-  if i~= 1 and not is_lstm then
-    lm:add(nn.Sequencer(nn.Linear(inputSize, hiddenSize)))
-  end
-
-  -- recurrent layer
-  local rnn
-  if is_lstm then
-    -- Long Short Term Memory
-    rnn = nn.Sequencer(nn.FastLSTM(inputSize, hiddenSize))
-  else
-    -- simple recurrent neural network
-    rnn = nn.Recurrent(
-      hiddenSize, -- first step will use nn.Add
-      nn.Identity(), -- for efficiency (see above input layer)
-      nn.Linear(hiddenSize, hiddenSize), -- feedback layer (recurrence)
-      nn.Tanh(), -- transfer function
-      99999 -- maximum number of time-steps per sequence
-    )
-    if opt.zeroFirst then
-      -- this is equivalent to forwarding a zero vector through the feedback layer
-      rnn.startModule:share(rnn.feedbackModule, 'bias')
+    local inputSize = opt.hiddenSize[1]
+    if type(inputSize) == "table" then
+      inputSize = inputSize[1]
     end
-    rnn = nn.Sequencer(rnn)
-  end
+    for i,hiddenSize in ipairs(opt.hiddenSize) do
+      local is_lstm = opt.lstm
+      if type(hiddenSize) == "table" then
+        is_lstm = hiddenSize[2] ~= "rnn"
+        hiddenSize = hiddenSize[1]
+      end
 
-  lm:add(rnn)
+      if i~= 1 and not is_lstm then
+        lm:add(nn.Sequencer(nn.Linear(inputSize, hiddenSize)))
+      end
 
-  inputSize = hiddenSize
-end
+      -- recurrent layer
+      local rnn
+      if is_lstm then
+        -- Long Short Term Memory
+        rnn = nn.Sequencer(nn.FastLSTM(inputSize, hiddenSize))
+      else
+        -- simple recurrent neural network
+        rnn = nn.Recurrent(
+          hiddenSize, -- first step will use nn.Add
+          nn.Identity(), -- for efficiency (see above input layer)
+          nn.Linear(hiddenSize, hiddenSize), -- feedback layer (recurrence)
+          nn.Tanh(), -- transfer function
+          99999 -- maximum number of time-steps per sequence
+        )
+        if opt.zeroFirst then
+          -- this is equivalent to forwarding a zero vector through the feedback layer
+          rnn.startModule:share(rnn.feedbackModule, 'bias')
+        end
+        rnn = nn.Sequencer(rnn)
+      end
 
-if opt.bidirectional then
-  -- initialize BRNN with fwd, bwd RNN/LSTMs
-  local bwd = lm:clone()
-  bwd:reset()
-  bwd:remember('neither')
-  local brnn = nn.BiSequencerLM(lm, bwd)
+      lm:add(rnn)
 
-  lm = nn.Sequential()
-  lm:add(brnn)
+      inputSize = hiddenSize
+    end
 
-  inputSize = inputSize*2
-end
+    if opt.bidirectional then
+      -- initialize BRNN with fwd, bwd RNN/LSTMs
+      local bwd = lm:clone()
+      bwd:reset()
+      bwd:remember('neither')
+      local brnn = nn.BiSequencerLM(lm, bwd)
 
-if opt.dropout > 0 then -- dropout it applied at end of recurrence
-lm:add(nn.Sequencer(nn.Dropout(opt.dropout)))
-end
+      lm = nn.Sequential()
+      lm:add(brnn)
 
+      inputSize = inputSize*2
+    end
 
--- input layer (i.e. word embedding space)
-lm:insert(nn.SplitTable(1,2), 1) -- tensor to table of tensors
+    if opt.dropout > 0 then -- dropout it applied at end of recurrence
+        lm:add(nn.Sequencer(nn.Dropout(opt.dropout)))
+    end
 
-if opt.dropout > 0 then
-  lm:insert(nn.Dropout(opt.dropout), 1)
-end
-if type(opt.hiddenSize[1]) == "table" then
-  lookup = nn.LookupTable(ds:vocabularySize(), opt.hiddenSize[1][1])
+    -- input layer (i.e. word embedding space)
+    lm:insert(nn.SplitTable(1,2), 1) -- tensor to table of tensors
+
+    if opt.dropout > 0 then
+      lm:insert(nn.Dropout(opt.dropout), 1)
+    end
+    local lookup
+    if type(opt.hiddenSize[1]) == "table" then
+      lookup = nn.LookupTable(ds:vocabularySize(), opt.hiddenSize[1][1])
+    else
+      lookup = nn.LookupTable(ds:vocabularySize(), opt.hiddenSize[1])
+    end
+    lookup.maxOutNorm = -1 -- disable maxParamNorm on the lookup table
+    lm:insert(lookup, 1)
+
+    -- output layer
+    if #ds:vocabulary() > 50000 then
+      print("Warning: you are using full LogSoftMax for last layer, which "..
+          "is really slow (800,000 x outputEmbeddingSize multiply adds "..
+          "per example. Try --softmaxtree instead.")
+    end
+    local softmax = nn.Sequential()
+    softmax:add(nn.Linear(inputSize, ds:vocabularySize()))
+    softmax:add(nn.LogSoftMax())
+
+    lm:add(nn.Sequencer(softmax))
+
+    local num_params = 0
+    if opt.uniform > 0 then
+      for k,param in pairs(lm:parameters()) do
+        param:uniform(-opt.uniform, opt.uniform)
+        num_params = num_params + param:nElement()
+      end
+    end
+
+    print("Number of parameters: " .. num_params)
+
+    -- we should always remember last state until manually calling forget, even for sentence sampler
+    lm:remember('both')
+
+    charlm = dplm.CharLM(lm,ds.vocab)
 else
-  lookup = nn.LookupTable(ds:vocabularySize(), opt.hiddenSize[1])
-end
-lookup.maxOutNorm = -1 -- disable maxParamNorm on the lookup table
-lm:insert(lookup, 1)
-
--- output layer
-if #ds:vocabulary() > 50000 then
-  print("Warning: you are using full LogSoftMax for last layer, which "..
-      "is really slow (800,000 x outputEmbeddingSize multiply adds "..
-      "per example. Try --softmaxtree instead.")
-end
-softmax = nn.Sequential()
-softmax:add(nn.Linear(inputSize, ds:vocabularySize()))
-softmax:add(nn.LogSoftMax())
-
-lm:add(nn.Sequencer(softmax))
-
-local num_params = 0
-if opt.uniform > 0 then
-  for k,param in pairs(lm:parameters()) do
-    param:uniform(-opt.uniform, opt.uniform)
-    num_params = num_params + param:nElement()
-  end
+    charlm = torch.load(opt.modelFile)
 end
 
-print("Number of parameters: " .. num_params)
-
--- we should always remember last state until manually calling forget, even for sentence sampler
-lm:remember('both')
+local lm = charlm._lm
 
 
 --[[Propagators]]--
@@ -205,7 +214,6 @@ ad = dp.ThresholdedAdaptiveDecay{max_wait = opt.maxWait, decay_factor=opt.decayF
 optim_state = {learningRate = opt.learningRate, beta1 = 0 }
 
 local params, grad_params -- initialized later, after it is clear which device is used (cpu, cuda, ...)
-local charlm = dplm.CharLM(lm,ds.vocab)
 
 local training_sampler = opt.useText and dp.TextSampler{epoch_size = opt.trainEpochSize, batch_size = opt.batchSize}
     or dplm.LargeSentenceSampler{epoch_size = opt.trainEpochSize, batch_size = opt.batchSize, max_size=opt.maxSize,
