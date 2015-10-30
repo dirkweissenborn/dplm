@@ -10,7 +10,7 @@ cmd:text("$> th recurrentlanguagemodel.lua --dataPath /path/to/data --cuda --use
     " --validEpochSize -1 --dropout --hiddenSize '{200,200}' --batchSize 32 --progress")
 cmd:text('Options:')
 cmd:option('--learningRate', 1e-2, 'learning rate at t=0')
-cmd:option('--minLR', 1e-4, 'minimal learning rate')
+cmd:option('--minLR', 1e-5, 'minimal learning rate')
 cmd:option('--maxWait', 0, 'maximum number of epochs to wait for a new minima to be found. After that, the learning rate is decayed by decayFactor.')
 cmd:option('--decayFactor', 0.5, 'factor by which learning rate is decayed for adaptive decay.')
 cmd:option('--gradClip', 5, 'max magnitude of individual grad params')
@@ -222,16 +222,17 @@ train = dp.Optimizer{
       if ad.decay ~= 1 then
         optim_state.learningRate = optim_state.learningRate*ad.decay
         optim_state.learningRate = math.max(opt.minLR, optim_state.learningRate)
+      else
+        if opt.modelFile ~= '' then
+          torch.save(opt.modelFile, charlm)
+          print("CharLM saved to " .. opt.modelFile)
+        end
       end
       if not opt.silent then
         print("learningRate", optim_state.learningRate)
         if opt.meanNorm then
           print("mean gradParam/param norm", opt.meanNorm)
         end
-      end
-      if opt.modelFile ~= '' then
-        torch.save(opt.modelFile, charlm)
-        print("CharLM saved to " .. opt.modelFile)
       end
     end
   end,
@@ -300,10 +301,4 @@ if not opt.silent then
 end
 
 xp:run(ds)
-
-if opt.modelFile ~= '' then 
-  local model = dplm.CharLM(lm,ds.vocab)
-  model:save(opt.modelFile)
-  print("CharLM saved to " .. opt.modelFile)
-end
 
