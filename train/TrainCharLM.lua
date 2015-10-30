@@ -205,7 +205,7 @@ else
     charlm = torch.load(opt.modelFile)
 end
 
-local lm = charlm._lm
+local lm = charlm.model
 
 
 --[[Propagators]]--
