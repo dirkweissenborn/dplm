@@ -280,6 +280,7 @@ xp = dp.Experiment{
     ad,
     dp.FileLogger(opt.log),
     dp.EarlyStopper{
+      start_epoch=0,
       max_epochs = opt.maxTries,
       error_report={opt.trainOnly and 'optimizer' or 'validator','feedback','perplexity','ppl'}
     }
