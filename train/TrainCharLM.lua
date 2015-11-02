@@ -232,7 +232,7 @@ train = dp.Optimizer{
         optim_state.learningRate = math.max(opt.minLR, optim_state.learningRate)
       else
         if opt.modelFile ~= '' then
-          torch.save(opt.modelFile, charlm)
+          charlm:save(opt.modelFile)
           print("CharLM saved to " .. opt.modelFile)
         end
       end
