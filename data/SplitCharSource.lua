@@ -158,7 +158,6 @@ end
 
 function SplitCharSource.create_vocab(in_textfile, out_vocabfile)
   local cache_len = 10000
-  local tot_len = 0
   local f = io.open(in_textfile, "r")
   -- create vocabulary if it doesn't exist yet
   -- record all characters to a set
@@ -169,7 +168,6 @@ function SplitCharSource.create_vocab(in_textfile, out_vocabfile)
     for char in rawdata:gmatch '.' do
       if char ~= "\n" and not unordered[char] then unordered[char] = true end
     end
-    tot_len = tot_len + #rawdata
     rawdata = f:read(cache_len)
   until not rawdata
 
@@ -193,11 +191,15 @@ function SplitCharSource.create_vocab(in_textfile, out_vocabfile)
 end
 
 function SplitCharSource.text_to_tensor(in_textfile, out_tensorfile, vocab)
-  -- construct a tensor with all the data
-  local d
-  if #ordered < 256 then d = torch.IntTensor(tot_len,2)
-  elseif #ordered < 32767 then d = torch.ShortTensor(tot_len,2) end
   local f = io.open(in_textfile, "r")
+  local tot_len = 0
+  for line in f:lines() do
+    tot_len = tot_len + string.len(line)
+  end
+  f:close()
+  -- construct a tensor with all the data
+  local d = torch.IntTensor(tot_len,2)
+  f = io.open(in_textfile, "r")
   local i = 0
   local end_i = vocab["</S>"]
   for line in f:lines() do
