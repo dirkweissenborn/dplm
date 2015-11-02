@@ -94,7 +94,7 @@ function SplitCharSource:createDataSets(split_fracs)
     if not self.vocab then
       self.vocab = SplitCharSource.create_vocab(input_file,vocab_file)
     end
-    data = SplitCharSource.text_to_tensor(input_file, vocab_file, tensor_file, self.vocab)
+    data = SplitCharSource.text_to_tensor(input_file, self.vocab, tensor_file)
   else
     if not self.vocab then
       self.vocab = torch.load(vocab_file)
@@ -190,7 +190,7 @@ function SplitCharSource.create_vocab(in_textfile, out_vocabfile)
   return vocab
 end
 
-function SplitCharSource.text_to_tensor(in_textfile, out_tensorfile, vocab)
+function SplitCharSource.text_to_tensor(in_textfile, vocab, out_tensorfile)
   local f = io.open(in_textfile, "r")
   local tot_len = 0
   for line in f:lines() do
