@@ -98,7 +98,7 @@ function SplitCharSource:createDataSets(split_fracs)
   self._sentence_end = self.vocab["</S>"]
 
   local train_l = math.floor(len * split_fracs[1])
-  while data[train_l][2] ~= self._sentence_end do
+  while self._sentence and data[train_l][2] ~= self._sentence_end do
     train_l = train_l - 1
   end
   local train = self:create_dataset(data:sub(1, train_l, 1, -1),"train")
@@ -106,7 +106,7 @@ function SplitCharSource:createDataSets(split_fracs)
   local valid_l = math.floor(len * split_fracs[2])
   local valid
   if valid_l > 0 then
-    while data[train_l+valid_l][2] ~= self._sentence_end do
+    while self._sentence and data[train_l+valid_l][2] ~= self._sentence_end do
       valid_l = valid_l - 1
     end
     local valid_data = data:sub(train_l+1, train_l+valid_l, 1, -1)
@@ -116,7 +116,7 @@ function SplitCharSource:createDataSets(split_fracs)
   local test_l = math.floor(len * split_fracs[3])
   local test
   if test_l > 0 then
-    while data[train_l+valid_l+test_l][2] ~= self._sentence_end do
+    while self._sentence and data[train_l+valid_l+test_l][2] ~= self._sentence_end do
       test_l = test_l + 1
     end
     local test_data = data:sub(train_l+valid_l+1, train_l+valid_l+test_l, 1, -1)
@@ -178,18 +178,16 @@ function SplitCharSource.text_to_tensor(in_textfile, out_vocabfile, out_tensorfi
   f = io.open(in_textfile, "r")
   local i = 0
   local end_i = vocab["</S>"]
-  for rawdata in f:lines() do
+  for line in f:lines() do
     local start_index = i+1
-    for char in rawdata:gmatch '.' do
+    for char in line:gmatch '.' do
       i = i + 1
       d[i][2] = vocab[char]
       d[i][1] = start_index
     end
-    if sentence then
-      i = i+1
-      d[i][2] = end_i
-      d[i][1] = start_index
-    end
+    i = i+1
+    d[i][2] = end_i
+    d[i][1] = start_index
   end
   f:close()
 
