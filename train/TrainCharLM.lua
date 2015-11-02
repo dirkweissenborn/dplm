@@ -4,10 +4,7 @@ require 'dplm'
 --[[command line arguments]]--
 cmd = torch.CmdLine()
 cmd:text()
-cmd:text('Train a Language Model on BillionWords or PennTreeBank (or your own) dataset using a Simple Recurrent Neural Network')
-cmd:text('Example:')
-cmd:text("$> th recurrentlanguagemodel.lua --dataPath /path/to/data --cuda --useDevice 1 --trainEpochSize -1" ..
-    " --validEpochSize -1 --dropout --hiddenSize '{200,200}' --batchSize 32 --progress")
+
 cmd:text('Options:')
 cmd:option('--learningRate', 1e-2, 'learning rate at t=0')
 cmd:option('--minLR', 1e-5, 'minimal learning rate')
@@ -232,7 +229,7 @@ train = dp.Optimizer{
         optim_state.learningRate = math.max(opt.minLR, optim_state.learningRate)
       else
         if opt.modelFile ~= '' then
-          charlm:save(opt.modelFile)
+          torch.save(opt.modelFile,charlm)
           print("CharLM saved to " .. opt.modelFile)
         end
       end
@@ -309,4 +306,6 @@ if not opt.silent then
 end
 
 xp:run(ds)
+charlm:save(opt.modelFile)
+
 
