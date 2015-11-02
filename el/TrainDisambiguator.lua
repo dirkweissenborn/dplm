@@ -16,7 +16,6 @@ cmd:option('--maxEpoch', 10, 'maximum number of epochs to run')
 cmd:option('--maxTries', 4, 'maximum number of epochs to try to find a better local minima for early-stopping')
 cmd:option('--progress', false, 'print progress bar')
 cmd:option('--silent', false, 'dont print anything to stdout')
-cmd:option('--uniform', 8e-2, 'initialize parameters using uniform distribution between -uniform and uniform. -1 means default initialization')
 cmd:option('--id',dp.uniqueID(),'name of experiment, defaults to dp.uniqueID() generator')
 cmd:option('--log',dp.SAVE_DIR,'path of log directory')
 
@@ -59,7 +58,7 @@ lm:remember('both')
 -- load data ---------------------------------------
 local corpus = dplm.AIDALoader(opt.dataDir)
 
---corpus.train = tablex.sub(corpus.train,1,10)
+corpus.train = tablex.sub(corpus.train,1,100)
 --corpus.valid   = tablex.sub(corpus.valid,1,10)
 
 -- extract candidates ------------------------------
@@ -161,6 +160,8 @@ function PNSampler:sampleEpoch(dataset)
   local neg_it = self._neg_sampler:sampleEpoch(neg_dataset)
   self._next_neg = false
   self._one_done = false
+
+
   return function(batch)
     local ret
     self._end_of_batch = false
@@ -186,7 +187,7 @@ function PNSampler:sampleEpoch(dataset)
   end
 end
 
-train_sampler = PosNegSampler{epoch_size = opt.trainEpochSize, batch_size = opt.batchSize }
+train_sampler = PosNegSampler{epoch_size = -1, batch_size = opt.batchSize }
 
 -- train --------------------------------------------
 local optim_state = {learningRate = opt.learningRate, beta1 = 0 }
@@ -231,8 +232,8 @@ train = dp.Optimizer{
     end
     criterion.negate = false
     print("=== Adapting to concepts of corpus. ===")
-    disambiguator:adapt_to(tablex.merge(concepts, neg_concepts), verbose,
-      {learningRate=opt.adaptLR, batch_size = opt.batchSize, rho=opt.rho})
+    disambiguator:adapt_to(tablex.merge(concepts, neg_concepts),
+      {learningRate=opt.adaptLR, batch_size = opt.batchSize, rho=opt.rho}, verbose)
     print("=== Continue Training. ===")
     collectgarbage()
   end,

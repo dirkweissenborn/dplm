@@ -70,13 +70,6 @@ if opt.xpPath ~= '' then
   assert(paths.filep(opt.xpPath), opt.xpPath..' does not exist')
 end
 
-ds = dplm.SplitCharSource{
-  context_size=1, --opt.bidirectional and opt.rho+1 or opt.rho,
-  recurrent=true, bidirectional=opt.bidirectional,
-  name='rnnlm', data_path = opt.dataPath, split_fractions = opt.splitFractions,
-  sentence= not opt.useText, context_size=opt.bidirectional and opt.rho+1 or opt.rho
-}
-
 --[[Saved experiment]]--
 if opt.xpPath ~= '' then
   if opt.cuda > 0 then
@@ -197,12 +190,28 @@ if not paths.filep(opt.modelFile) or opt.overwrite then
     -- we should always remember last state until manually calling forget, even for sentence sampler
     lm:remember('both')
 
+    ds = dplm.SplitCharSource{
+      context_size=1, --opt.bidirectional and opt.rho+1 or opt.rho,
+      recurrent=true, bidirectional=opt.bidirectional,
+      name='rnnlm', data_path = opt.dataPath, split_fractions = opt.splitFractions,
+      sentence= not opt.useText, context_size=opt.bidirectional and opt.rho+1 or opt.rho
+    }
+
     charlm = dplm.CharLM(lm,ds.vocab)
 else
     charlm = torch.load(opt.modelFile)
+    ds = dplm.SplitCharSource{
+      context_size=1, --opt.bidirectional and opt.rho+1 or opt.rho,
+      recurrent=true, bidirectional=opt.bidirectional, vocab = charlm.vocab,
+      name='rnnlm', data_path = opt.dataPath, split_fractions = opt.splitFractions,
+      sentence= not opt.useText, context_size=opt.bidirectional and opt.rho+1 or opt.rho
+    }
 end
 
 local lm = charlm.model
+
+
+
 
 
 --[[Propagators]]--
@@ -307,6 +316,3 @@ if not opt.silent then
 end
 
 xp:run(ds)
-charlm:save(opt.modelFile)
-
-

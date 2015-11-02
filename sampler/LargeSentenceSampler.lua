@@ -13,7 +13,11 @@ function LargeSentenceSampler:__init(config)
   -- but the test set is alright
   self._max_size = config.max_size or 999999999999
   self._context_size = config.context_size or 999999999999
-  self._shuffle = config.shuffle or true
+  self._shuffle = true
+  if config.shuffle ~= nil then
+    self._shuffle = config.shuffle
+  end
+
 end
 
 function LargeSentenceSampler:_sampleEpoch(dataset)

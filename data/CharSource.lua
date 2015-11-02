@@ -31,7 +31,7 @@ function CharSource:__init(config)
       help='set this to true when the *file args are the text itself'},
     {arg='vocab', type='table', 'vocabulary to be used'},
     {arg='sentence', type='boolean', default=true,
-      help='split fractions for training/valid/test, which should sum to a maximum of one'}
+      help='training on sentence level (one sentence per line), otherwise treated as one coherent text.'}
   )
 
   local function load(textOrFile)

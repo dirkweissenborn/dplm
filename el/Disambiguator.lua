@@ -8,7 +8,7 @@ function Disambiguator:__init(candmap, facts, model, args)
 
   -- adaption parameters
   args = args or {}
-  self._learningRate  = args.learningRate or 1e-2
+  self._learningRate  = args.learningRate or 2e-3
   self._rho = args.rho or 100
   self._batch_size = args.batch_size or 1
   self._max_size = args.max_size or 1000
@@ -28,7 +28,7 @@ function Disambiguator:close()
   self._facts:close()
 end
 
-function Disambiguator:adapt_to(concepts, verbose, opts)
+function Disambiguator:adapt_to(concepts, opts, verbose)
   opts = opts or {}
   local lr  = opts.learningRate or self._learningRate
   local rho = opts.rho or self._rho

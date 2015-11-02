@@ -7,7 +7,8 @@ function SplitCharSource:__init(config)
     "Constructor requires key-value arguments")
   local args, train, valid, test, split_fracs
   args, self._context_size, self._recurrent,
-  self._bidirectional, self._data_path, self._string, split_fracs, self._sentence = xlua.unpack(
+  self._bidirectional, self._data_path, self._string, split_fracs,
+  self._sentence, self.vocab = xlua.unpack(
     {config},
     'CharSource',
     'Creates a DataSource out of 3 strings or text files',
@@ -26,6 +27,8 @@ function SplitCharSource:__init(config)
     {arg='split_fractions', type='table', default={1,0,0},
       help='split fractions for training/valid/test, which should sum to a maximum of one'},
     {arg='sentence', type='boolean', default=true,
+      help='split fractions for training/valid/test, which should sum to a maximum of one'},
+    {arg='vocab', type='table', default=nil,
       help='split fractions for training/valid/test, which should sum to a maximum of one'}
   )
 
@@ -60,10 +63,15 @@ function SplitCharSource:createDataSets(split_fracs)
   assert(path.exists(input_file),"CharSource requires file: " .. input_file)
   local vocab_file = path.join(data_dir, 'vocab_lw.t7')
   local tensor_file = path.join(data_dir, 'data_lw.t7')
-
   -- fetch file attributes to determine if we need to rerun preprocessing
-  local run_prepro = false
-  if not (path.exists(vocab_file) or path.exists(tensor_file)) then
+  local run_prepro =false
+  if self.vocab ~= nil then
+    -- if there is already a vocabulary, preprocessing has to be done
+    -- and we do not save data or vocab
+    vocab_file = nil
+    tensor_file = nil
+    run_prepro = true
+  elseif not (path.exists(vocab_file) or path.exists(tensor_file)) then
     -- prepro files do not exist, generate them
     print('vocab.t7 and data.t7 do not exist. Running preprocessing...')
     run_prepro = true
@@ -83,9 +91,14 @@ function SplitCharSource:createDataSets(split_fracs)
   if run_prepro then
     -- construct a tensor with all the data, and vocab file
     print('one-time setup: preprocessing input text file ' .. input_file .. '...')
-    data, self.vocab = SplitCharSource.text_to_tensor(input_file, vocab_file, tensor_file, self._sentence)
+    if not self.vocab then
+      self.vocab = SplitCharSource.create_vocab(input_file,vocab_file)
+    end
+    data = SplitCharSource.text_to_tensor(input_file, vocab_file, tensor_file, self.vocab)
   else
-    self.vocab = torch.load(vocab_file)
+    if not self.vocab then
+      self.vocab = torch.load(vocab_file)
+    end
     data = torch.load(tensor_file)
   end
 
@@ -143,8 +156,7 @@ function SplitCharSource:create_dataset(data, whichset)
   end
 end
 
---static
-function SplitCharSource.text_to_tensor(in_textfile, out_vocabfile, out_tensorfile, sentence)
+function SplitCharSource.create_vocab(in_textfile, out_vocabfile)
   local cache_len = 10000
   local tot_len = 0
   local f = io.open(in_textfile, "r")
@@ -171,18 +183,28 @@ function SplitCharSource.text_to_tensor(in_textfile, out_vocabfile, out_tensorfi
   for i, char in ipairs(ordered) do
     vocab[char] = i
   end
+
+  if out_vocabfile then
+    print('saving ' .. out_vocabfile)
+    torch.save(out_vocabfile, vocab)
+  end
+
+  return vocab
+end
+
+function SplitCharSource.text_to_tensor(in_textfile, out_tensorfile, vocab)
   -- construct a tensor with all the data
   local d
   if #ordered < 256 then d = torch.IntTensor(tot_len,2)
   elseif #ordered < 32767 then d = torch.ShortTensor(tot_len,2) end
-  f = io.open(in_textfile, "r")
+  local f = io.open(in_textfile, "r")
   local i = 0
   local end_i = vocab["</S>"]
   for line in f:lines() do
     local start_index = i+1
     for char in line:gmatch '.' do
       i = i + 1
-      d[i][2] = vocab[char]
+      d[i][2] = vocab[char] or vocab["<U>"]
       d[i][1] = start_index
     end
     i = i+1
@@ -191,12 +213,12 @@ function SplitCharSource.text_to_tensor(in_textfile, out_vocabfile, out_tensorfi
   end
   f:close()
 
-  -- save output preprocessed files
-  print('saving ' .. out_vocabfile)
-  torch.save(out_vocabfile, vocab)
-  print('saving ' .. out_tensorfile)
-  torch.save(out_tensorfile, d)
-  return d, vocab
+  if out_tensorfile then
+    -- save output preprocessed files
+    print('saving ' .. out_tensorfile)
+    torch.save(out_tensorfile, d)
+  end
+  return d
 end
 
 function SplitCharSource:vocabulary()
