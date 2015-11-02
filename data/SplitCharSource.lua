@@ -90,9 +90,9 @@ function SplitCharSource:createDataSets(split_fracs)
   local data
   if run_prepro then
     -- construct a tensor with all the data, and vocab file
-    print('one-time setup: preprocessing input text file ' .. input_file .. '...')
+    print('preprocessing input text file ' .. input_file .. '...')
     if not self.vocab then
-      self.vocab = SplitCharSource.create_vocab(input_file,vocab_file)
+      self.vocab = SplitCharSource.create_v ocab(input_file,vocab_file)
     end
     data = SplitCharSource.text_to_tensor(input_file, self.vocab, tensor_file)
   else
@@ -157,6 +157,7 @@ function SplitCharSource:create_dataset(data, whichset)
 end
 
 function SplitCharSource.create_vocab(in_textfile, out_vocabfile)
+  print("Creating Vocabulary")
   local cache_len = 10000
   local f = io.open(in_textfile, "r")
   -- create vocabulary if it doesn't exist yet
@@ -194,7 +195,7 @@ function SplitCharSource.text_to_tensor(in_textfile, vocab, out_tensorfile)
   local f = io.open(in_textfile, "r")
   local tot_len = 0
   for line in f:lines() do
-    tot_len = tot_len + string.len(line)
+    tot_len = tot_len + string.len(line) + 1
   end
   f:close()
   -- construct a tensor with all the data

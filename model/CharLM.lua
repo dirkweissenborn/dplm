@@ -96,7 +96,6 @@ function CharLM:clean()
   self.model:forward(torch.ones(1,1):typeAs(params))
   self.model:backward(torch.ones(1,1):typeAs(params),{torch.zeros(1,self:vocab_size()):typeAs(params)})
   self.model:forget()
-  self.model:reset()
   collectgarbage()
 end
 
