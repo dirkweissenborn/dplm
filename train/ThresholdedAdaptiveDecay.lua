@@ -35,7 +35,7 @@ function ThresholdedAdaptiveDecay:__init(config)
 end
 
 function ThresholdedAdaptiveDecay:errorMinima(found_minima, error_minima)
-  if not found_minima then
+  if found_minima then
     -- check if improvement is above threshold
     found_minima = self._last_error - self._threshold > error_minima._minima
   end
