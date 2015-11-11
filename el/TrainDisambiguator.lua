@@ -54,7 +54,6 @@ lm = charLM.model
 -- we should always remember last state until manually calling forget, even for sentence sampler
 lm:remember('both')
 
-
 -- load data ---------------------------------------
 local corpus = dplm.AIDALoader(opt.dataDir)
 

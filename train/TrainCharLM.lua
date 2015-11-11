@@ -210,10 +210,6 @@ end
 
 local lm = charlm.model
 
-
-
-
-
 --[[Propagators]]--
 ad = dp.ThresholdedAdaptiveDecay{max_wait = opt.maxWait, decay_factor=opt.decayFactor}
 

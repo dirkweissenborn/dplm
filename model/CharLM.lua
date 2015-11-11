@@ -13,13 +13,19 @@ function CharLM:forward(text, forget)
   local l = string.len(text)
   if forget then l = l + 1 end
   local t = torch.zeros(l):fill(self:startId())
+
   for i=1, string.len(text) do
     local idx = i
     if forget then idx = idx+1 end
     t[idx] = self.vocab[text:sub(i,i)]
   end
   local out = self.model:forward(t:view(1,-1))
-  return out[#out]
+  local loss = 0
+  for i=1, #out-1 do
+    loss = loss + out[i][1][t[i+1]]
+  end
+
+  return out[#out], loss
 end
 
 function CharLM:rev_vocab()
@@ -104,7 +110,55 @@ function CharLM:save(f)
   torch.save(f,self)
 end
 
-function CharLM:beam_search(str, n, l, temp)
+--works together with _set_state
+function CharLM:_get_state()
+  local s = { {}, {} }
+  local out =  s[1]
+  local cell = s[2]
+
+  local function get_state(m)
+    if torch.isTypeOf(m, "nn.AbstractRecurrent") then
+      table.insert(out,m.output:clone())
+      if m.cell then
+        table.insert(cell,m.cell:clone())
+      end
+    end
+    if m.modules then
+      for _,m2 in ipairs(m.modules) do
+        get_state(m2, out, cell)
+      end
+    end
+  end
+  get_state(self.model)
+  return s
+end
+
+function CharLM:_set_state(s)
+  local function _set(m,out,cell,io,ic)
+    io = io or 1
+    ic = ic or 1
+    out =  out or {}
+    cell = cell or {}
+    if torch.isTypeOf(m, "nn.AbstractRecurrent") then
+      m.output:copy(out[io])
+      io = io + 1
+      if m.cell then
+        m.cell:copy(cell[ic])
+        ic = ic + 1
+      end
+    end
+    if m.modules then
+      for _,m2 in ipairs(m.modules) do
+        io, ic = _set(m2, out, cell, io, ic)
+      end
+    end
+    return io, ic
+  end
+  local out, cell = unpack(s)
+  _set(self.model,out,cell)
+end
+
+function CharLM:beam_search(str, n, l, no_reset, temp)
   local do_sample = temp
   temp = temp or 1
   --sampling doesn't work well, yet
@@ -130,53 +184,14 @@ function CharLM:beam_search(str, n, l, temp)
   end
 
   self:clean()
-  local model = self.model
-  local p = self:forward(str,true)
+  local p = self:forward(str,not no_reset)
   local rev_vocab = {}
   for k,v in pairs(self.vocab) do rev_vocab[v] = k end
 
   local beam = {}
   local y, ix = sample(p[1])
 
-  local function get_state(m,out,cell)
-    out =  out or {}
-    cell = cell or {}
-    if torch.isTypeOf(m, "nn.AbstractRecurrent") then
-      table.insert(out,m.output:clone())
-      if m.cell then
-        table.insert(cell,m.cell:clone())
-      end
-    end
-    if m.modules then
-      for _,m2 in ipairs(m.modules) do
-        get_state(m2, out, cell)
-      end
-    end
-    return {out,cell}
-  end
-
-  local function set_state(m,out,cell,io,ic)
-    io = io or 1
-    ic = ic or 1
-    out =  out or {}
-    cell = cell or {}
-    if torch.isTypeOf(m, "nn.AbstractRecurrent") then
-      m.output = out[io]
-      io = io + 1
-      if m.cell then
-        m.cell = cell[ic]
-        ic = ic + 1
-      end
-    end
-    if m.modules then
-      for _,m2 in ipairs(m.modules) do
-        io, ic = set_state(m2, out, cell, io, ic)
-      end
-    end
-    return io, ic
-  end
-
-  local s = get_state(model)
+  local s = self:_get_state()
   for i = 1, math.min(n, p[1]:size(1)) do
     if #beam < n then
       local b = {}
@@ -192,10 +207,10 @@ function CharLM:beam_search(str, n, l, temp)
     local new_beam = {}
     for i= 1,  #beam do
       local b = beam[i]
-      set_state(model, unpack(b.s))
+      self:_set_state(b.s)
       local p = self:forward(b.chars[#b.chars])
       local y,ix = sample(p[1])
-      local s = get_state(model)
+      local s = self:_get_state()
       for ii = 1, math.min(n, p[1]:size(1)) do
         local b2 = tablex.deepcopy(b)
         b2.s = s
@@ -214,11 +229,31 @@ function CharLM:beam_search(str, n, l, temp)
     end
     collectgarbage()
   end
-  self.model = model
   -- cleanup
   for i= 1, #beam do beam[i].m = nil end
   collectgarbage()
   return beam
+end
+
+function CharLM:what_fits(candidates, pre, post, reset)
+  self:clean()
+  local pre_out, pre_p = self:forward(pre:sub(1,-2),reset)
+  pre_out = pre_out:clone()
+  local pre_s = self:_get_state()
+  local result = {}
+  for _,cand in ipairs(candidates) do
+    self:_set_state(pre_s)
+    local _,p = self:forward(cand .. post)
+    --local s = self:_get_state()
+    local loss = p + pre_p + pre_out[1][self.vocab[cand:sub(1,1)]]
+    --local _, cand_loss = self:forward(cand,true)
+    --loss = loss - cand_loss
+    local len = string.len(post) + string.len(pre) + string.len(cand)-1
+    table.insert(result,{c = cand, p = loss})
+    --table.insert(result,{c = cand, p = loss/len})
+    collectgarbage()
+  end
+  return result
 end
 
 function next_word(decoder, str, n, max_l)

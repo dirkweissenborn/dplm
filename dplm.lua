@@ -10,7 +10,12 @@ torch.include('dplm', 'model/CharLM.lua')
 torch.include('dplm', 'sampler/LargeSentenceSampler.lua')
 torch.include('dplm', 'train/ThresholdedAdaptiveDecay.lua')
 torch.include('dplm', 'feedback/LossFeedback.lua')
-torch.include('dplm', 'model/SwitchCriterion.lua')
+torch.include('dplm', 'model/Criterion.lua')
+torch.include('dplm', 'model/EncoderDecoder.lua')
+torch.include('dplm', 'model/AttentionLSTM.lua')
+torch.include('dplm', 'model/Attention.lua')
+torch.include('dplm', 'model/AttentionalSkipStackedLSTM.lua')
+torch.include('dplm', 'model/TableModules.lua')
 
 -- Disambiguation
 torch.include('dplm', 'el/DBMap.lua')
