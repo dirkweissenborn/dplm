@@ -12,7 +12,7 @@ function AttentionLSTM:buildModel()
   local prev_c = nn.Identity()()
 
   --local narrowTable = nn.NarrowTable(2,10000)(input)
-  local attention = controlledAttention(self.inputSize, self.outputSize)({input, prev_h})
+  local attention = controlledAttention(self.inputSize, self.outputSize)({prev_h,input})
 
   -- join current input with attention
   --local joined_input = nn.JoinTable(2)({input,attention})

@@ -1,28 +1,45 @@
 
 -- partitions a table into a table of tables containing a max number of tensors
 -- kind of the opposite of FlattenTable
-
+-- used just before AttentionLSTM
 local SegmentTable,parent = torch.class("nn.SegmentTable","nn.Module")
 
-function SegmentTable:__init(partition_size,first_extra)
+function SegmentTable:__init(partition_size,prepend)
   self.partition_size = partition_size
-  self.first_extra = first_extra
+  self._prepend = prepend
+  self._left_over = {}
+  self.step = 1
 end
 
 function SegmentTable:updateOutput(input)
+  assert(self.train ~= false or #input == 1, "During evalutation SegmentTable can only be used 1 step at a time")
   self.output = {}
-  local t = input
-
-  if self.first_extra then
-    table.insert(self.output, {input[1]})
-    t = _.tail(t,2)
+  for _,v in pairs(input) do
+    table.insert(self._left_over, v)
   end
 
-  for p in _.partition(t,self.partition_size) do
-    if #p == self.partition_size then table.insert(self.output, p) end
+  if self._prepend then
+    table.insert(self.output, self._prepend)
   end
+
+  for p in _.partition(self._left_over,self.partition_size) do
+    if #p == self.partition_size then table.insert(self.output, p)
+    elseif self.train ~= false then
+      self._left_over = p
+    else
+      _.slice(self._left_over,1,#p)
+      rnn.recursiveCopy(self._left_over, p)
+    end
+  end
+
+  self.step = self.step + #input
   return self.output
 end
+
+function SegmentTable:forget()
+  self._left_over = {}
+end
+
 
 function SegmentTable:updateGradInput(input, gradOutput)
   self.gradInput = _.flatten(gradOutput)
@@ -121,38 +138,6 @@ function ZipWithSkipTable:updateGradInput(input, gradOutput)
   return self.gradInput
 end
 
-
-local ZipTableWithTensor, parent = torch.class("nn.ZipTableWithTensor","nn.Module")
-
-function ZipTableWithTensor:__init()
-end
-
-function ZipTableWithTensor:updateOutput(input)
-  local tab = input[1]
-  local ten = input[2]
-  self.output = {}
-  for _,v in ipairs(tab) do table.insert(self.output, {v,ten}) end
-  return self.output
-end
-
-function ZipTableWithTensor:updateGradInput(input, gradOutput)
-  local ten = input[2]
-  self.gradInput = self.gradInput or {}
-  self.gradInput[1] = self.gradInput[1] and _.slice(self.gradInput[1],1,#gradOutput) or {}
-  self.gradInput[2] = self.gradInput[2] or ten:clone()
-  self.gradInput[2]:resizeAs(ten):zero()
-  for i,v in ipairs(gradOutput) do
-    local table_t = self.gradInput[1][i]
-    if not table_t then
-      table_t = v[1]:clone()
-      self.gradInput[1][i] = table_t
-    else
-      table_t:resizeAs(v[1]):copy(v[1])
-    end
-    self.gradInput[2]:add(v[2])
-  end
-  return self.gradInput
-end
 
 -- Zip Table with Table
 

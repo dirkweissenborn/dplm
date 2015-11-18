@@ -92,7 +92,7 @@ function SplitCharSource:createDataSets(split_fracs)
     -- construct a tensor with all the data, and vocab file
     print('preprocessing input text file ' .. input_file .. '...')
     if not self.vocab then
-      self.vocab = SplitCharSource.create_v ocab(input_file,vocab_file)
+      self.vocab = SplitCharSource.create_vocab(input_file,vocab_file)
     end
     data = SplitCharSource.text_to_tensor(input_file, self.vocab, tensor_file)
   else

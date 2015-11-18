@@ -2,147 +2,255 @@
 
 local SkipStackedLSTM, parent = torch.class('dplm.SkipStackedLSTM','nn.Container')
 
-
-function SkipStackedLSTM:__init(hiddenSize,vocabularySize,dropout,skip)
+function SkipStackedLSTM:__init(hiddenSize, vocabularySize, skip, dropout, rho)
   parent.__init(self)
-
-  local input  = nn.Identity()()
-  local decodingMask = nn.Identity()() -- batch x seq: 1 (predicting) or 0 (reading/encoding)
-  local lookup = nn.LookupTable(vocabularySize, hiddenSize[1]-1)(input) -- batch x seq x (dim-1 [one  missing is flag])
-  if dropout then
-    lookup = nn.Dropout(dropout)(lookup)
-  end
-  local decodingMaskView = nn.Replicate(1,2,1)(decodingMask) -- make it 3D
-  local inputJoin = nn.JoinTable(2,2)({decodingMaskView,lookup})
-
-  local lastInput  = nn.SplitTable(1,2)(inputJoin)
-  local enc_outs = {}
-  local inputSize = hiddenSize[1]
-  for i,hiddenSize in ipairs(hiddenSize) do
-    -- recurrent layer
-    local lstm
-    if i == 1 then
-      lstm = nn.FastLSTM(inputSize, hiddenSize)
-      lastInput = nn.Sequencer(lstm)(lastInput)
-    else
-      lstm = nn.AttentionLSTM(inputSize, hiddenSize)
-      local segmentedInput = nn.SegmentTable(skip,true)(lastInput)
-      lastInput = nn.Sequencer(lstm)(segmentedInput)
-    end
-    table.insert(enc_outs,lastInput)
-    inputSize = hiddenSize
-  end
-  self.module =  nn.gModule({input,decodingMask}, enc_outs)
-
+  self._hiddenSize = hiddenSize
+  self._vocabularySize = vocabularySize
+  self._skip = skip
+  self._dropout = dropout
+  self.module = self:create_input()
+  self._encoder, self._lstms = self:create_encoder(rho)
+  self.module:add(self._encoder)
   self.module:remember('both')
   self.modules[1] = self.module
-  self._hiddenSize = hiddenSize
 end
 
-function SkipStackedLSTM:create_decoder(hiddenSize,vocabularySize,dropout,skip)
-  local dec_input = nn.Identity()()
-  local enc_outs = {dec_input:split(#hiddenSize)}
-  local inputSize = hiddenSize[#hiddenSize]
-  local lastInput = enc_outs[#hiddenSize]
-  for i=#hiddenSize-1,1,-1 do
-    local hiddenSize = hiddenSize[i]
-    local zip = nn.ZipWithSkipTable(skip)({enc_outs[i],lastInput})
-    local join = nn.Sequencer(nn.JoinTable(2))(zip)
-    lastInput = nn.Sequencer(nn.FastLSTM(inputSize+hiddenSize, hiddenSize))(join)
-    inputSize = hiddenSize
+--static
+function SkipStackedLSTM:create_encoder(rho, i)
+  rho = rho or 1
+  i = i or 1
+  local hiddenSize = self._hiddenSize
+  local skip = self._skip
+  --actual encoder
+  local encoder = nn.Sequential()
+  local inputSize = hiddenSize[i-1] or hiddenSize[i]
+
+  -- recurrent layer
+  local lstm
+  if i == 1 then
+    lstm = nn.FastLSTM(inputSize, hiddenSize[i], rho)
+  else
+    lstm = nn.AttentionLSTM(inputSize, hiddenSize[i], rho)
+  end
+  encoder:add(lstm)
+  local lstms
+  if i < #hiddenSize then
+    local zeros = torch.zeros(hiddenSize[#hiddenSize])
+    local inner
+    inner, lstms = self:create_encoder(rho, i+1)
+    table.insert(lstms,1,lstm)
+    encoder:add(dplm.SkipAccumulateInputModule(skip, inner, zeros))
+  else
+    lstms = {lstm}
   end
 
-  local softmax = nn.Sequential()
-  if dropout then
-    softmax:add(nn.Dropout(dropout))
-  end
-  softmax:add(nn.Linear(inputSize, vocabularySize))
-  softmax:add(nn.LogSoftMax())
+  return encoder, lstms
+end
 
-  local out = nn.Sequencer(softmax)(lastInput)
-  return nn.gModule({dec_input}, {out})
+--create input module - returns sequential
+function SkipStackedLSTM:create_input()
+  --local input_module = nn.Sequential()
+  --input_module:add(nn.LookupTable(self._vocabularySize, self._hiddenSize[1]-1))
+  --if self._dropout then
+  --  input_module:add(nn.Dropout(dropout))
+  --end
+  --local mask_module = nn.Replicate(1,2,1)
+  --local module = nn.Sequential()
+  --module:add(nn.ParallelTable():add(input_module):add(mask_module))
+  --module:add(nn.JoinTable(2,2))
+  local input_module = nn.Sequential()
+  input_module:add(nn.LookupTable(self._vocabularySize, self._hiddenSize[1]))
+  if self._dropout then
+    input_module:add(nn.Dropout(dropout))
+  end
+  return input_module
 end
 
 function SkipStackedLSTM:updateOutput(input)
-  if type(input) == "table" then
-    return self.module:updateOutput(input)
-  else
-    self.dummyMask = self.dummyMask or input:clone()
-    self.dummyMask:resizeAs(input):fill(1)
-    return self.module:updateOutput({input,self.dummyMask})
-  end
+  --if type(input) == "table" then
+  return self.module:updateOutput(input)
+  --else
+  --  self.dummyMask = self.dummyMask or input:clone()
+  --  self.dummyMask:resizeAs(input):fill(1)
+  --  return self.module:updateOutput({input,self.dummyMask})
+  --end
 end
 
 function SkipStackedLSTM:updateGradInput(input, gradOutput)
-  if type(input) == "table" then
-    return self.module:updateGradInput(input, gradOutput)
-  else
-    return self.module:updateGradInput({input,self.dummyMask}, gradOutput)[1]
-  end
+  --if type(input) == "table" then
+  return self.module:updateGradInput(input, gradOutput)
+  --else
+  --  return self.module:updateGradInput({input,self.dummyMask}, gradOutput)[1]
+  --end
 end
 
 function SkipStackedLSTM:accGradParameters(input, gradOutput, scale)
-  if type(input) == "table" then
-    return self.module:accGradParameters(input, gradOutput, scale)
-  else
-    return self.module:accGradParameters({input,self.dummyMask}, gradOutput, scale)
-  end
+  --if type(input) == "table" then
+  return self.module:accGradParameters(input, gradOutput, scale)
+  --else
+   -- return self.module:accGradParameters({input,self.dummyMask}, gradOutput, scale)
+  --end
 end
 
--------------Attentional Encoder->Decoder as Module ------------------
+------------- Skip Decoder as Module ------------------
 
 local SkipStackedLSTMDecoder, parent =
   torch.class('dplm.SkipStackedLSTMDecoder','dplm.SkipStackedLSTM')
 
 
-function SkipStackedLSTMDecoder:__init(hiddenSize,vocabularySize,dropout,skip)
-  parent.__init(self,hiddenSize,vocabularySize,dropout,skip)
-
-  self._encoder = self.module
-  self._decoder = self:create_decoder(hiddenSize,vocabularySize,dropout,skip)
-
-  -- real decoder is composed of encoder and decoder
-  local enc_input = nn.Identity()()
-  local decodingMask = nn.Identity()()
-  local e = self._encoder({enc_input,decodingMask})
-  local d = self._decoder(e)
-  self.module = nn.gModule({enc_input, decodingMask},{d})
-
+function SkipStackedLSTMDecoder:__init(...)
+  parent.__init(self, ...)
+  if self._dropout then
+    self.module:add(nn.Dropout(dropout))
+  end
+  self.module:add(nn.Linear(self._hiddenSize[1], self._vocabularySize))
+  self.module:add(nn.LogSoftMax())
   self.module:remember('both')
   self.modules[1] = self.module
 end
 
-function SkipStackedLSTMDecoder:create_decoder(hiddenSize,vocabularySize,dropout,skip)
-  local dec_input = nn.Identity()()
-  local enc_outs = {dec_input:split(#hiddenSize)}
-  local inputSize = hiddenSize[#hiddenSize]
-  local lastInput = enc_outs[#hiddenSize]
-  for i=#hiddenSize-1,1,-1 do
-    local hiddenSize = hiddenSize[i]
-    local zip = nn.ZipWithSkipTable(skip)({enc_outs[i],lastInput})
-    local join = nn.Sequencer(nn.JoinTable(2))(zip)
-    lastInput = nn.Sequencer(nn.FastLSTM(inputSize+hiddenSize, hiddenSize))(join)
-    inputSize = hiddenSize
+function SkipStackedLSTMDecoder:create_encoder(rho, i)
+  rho = rho or 1
+  i = i or 1
+  local hiddenSize = self._hiddenSize
+  local skip = self._skip
+  --actual encoder
+  local encoder = nn.Sequential()
+  local inputSize = hiddenSize[i-1] or hiddenSize[i]
+
+  -- recurrent layer
+  local lstm
+  if i == 1 then
+    lstm = nn.FastLSTM(inputSize, hiddenSize[i], rho)
+  else
+    lstm = nn.AttentionLSTM(inputSize, hiddenSize[i], rho)
+  end
+  encoder:add(lstm)
+  local lstms
+  if i < #hiddenSize then
+    local zeros = torch.zeros(hiddenSize[i+1])
+
+    local inner
+    inner, lstms = self:create_encoder(rho, i+1)
+    table.insert(lstms,1,lstm)
+    local concat = nn.ConcatTable()
+    concat:add(nn.Identity())
+    concat:add(dplm.SkipAccumulateInputModule(skip, inner, zeros))
+    encoder:add(concat)
+    encoder:add(nn.JoinTable(2))
+    local dec_lstm = nn.FastLSTM(hiddenSize[i+1]+hiddenSize[i], hiddenSize[i], rho)
+    encoder:add(dec_lstm)
+    table.insert(lstms,dec_lstm)
+  else
+    lstms = {lstm}
   end
 
-  local softmax = nn.Sequential()
-  if dropout then
-    softmax:add(nn.Dropout(dropout))
-  end
-  softmax:add(nn.Linear(inputSize, vocabularySize))
-  softmax:add(nn.LogSoftMax())
-
-  local out = nn.Sequencer(softmax)(lastInput)
-  return nn.gModule({dec_input}, {out})
+  return encoder, lstms
 end
 
-function SkipStackedLSTMDecoder:encoder()
-  -- we clone the encoder, because the original encoder is part of the decoder
-  if not self._sharedEncoder then
-    self._sharedEncoder = self._encoder:sharedClone()
+------------- Attentional Skip Decoder as Module ------------------
+
+local AttentionSkipStackedLSTMDecoder, parent =
+torch.class('dplm.AttentionSkipStackedLSTMDecoder','dplm.SkipStackedLSTM')
+
+function AttentionSkipStackedLSTMDecoder:__init(hiddenSize, vocabularySize, skip, dropout, interactionSize, rho)
+  nn.Container.__init(self)
+  self._hiddenSize = hiddenSize
+  self._vocabularySize = vocabularySize
+  self._interactionSize = interactionSize or math.ceil(hiddenSize[#hiddenSize]/10)
+  self._skip = skip
+  self._dropout = dropout
+  self.module = self:create_input()
+  -- input is table: {input indices, {to attend,...}}
+  self.module = nn.Sequential():add(
+    nn.ParallelTable():add(self.module):add(
+      nn.ConcatTable():add(
+        nn.Identity()
+      ):add( --already calculateprojections beforehand, to not calculate it in every timestep
+        nn.Sequencer(nn.LinearNoBias(hiddenSize[#hiddenSize], self._interactionSize))
+      )
+    )
+  )
+  self._encoder, self._lstms = self:create_encoder(rho)
+  self.module:add(self._encoder)
+  if self._dropout then
+    self.module:add(nn.Dropout(dropout))
   end
-  return self._sharedEncoder
+  self.module:add(nn.Linear(self._hiddenSize[1], self._vocabularySize))
+  self.module:add(nn.LogSoftMax())
+  self.module:remember('both')
+  self.modules[1] = self.module
 end
+
+-- input is table: {input, to_attend}, where input is either tensor or table depending on i and to_attend is table
+-- of tensor we should put attention on
+function AttentionSkipStackedLSTMDecoder:create_encoder(rho, i)
+  rho = rho or 1
+  i = i or 1
+  local hiddenSize = self._hiddenSize
+  local skip = self._skip
+  --actual encoder
+  local encoder = nn.Sequential()
+  if i > 1 then --input correction
+    -- after SkipAccumulateInputModule we end up with a repitition of real input and to_attend
+    -- e.g., { {input1, to_attend}, {input2, to_attend}, {input3, to_attend}, ...}
+    -- we need { {input1, input2, input3}, to_attend}
+    local input_correct = nn.Sequencer(nn.SelectTable(1))
+    local to_attend_correct = nn.Sequential():add(nn.SelectTable(1)):add(nn.SelectTable(2))
+    encoder:add(nn.ConcatTable():add(input_correct):add(to_attend_correct))
+  end
+  local inputSize = hiddenSize[i-1] or hiddenSize[i]
+
+  -- recurrent layer
+  local lstms
+  local lstm
+
+  if i < #hiddenSize then
+    if i == 1 then
+      lstm = nn.FastLSTM(inputSize, hiddenSize[i], rho)
+    else
+      lstm = nn.AttentionLSTM(inputSize, hiddenSize[i], rho)
+    end
+    local zeros = torch.zeros(hiddenSize[i+1])
+    if i == #hiddenSize-1 then zeros = { zeros, zeros} end --also account for attention
+    local inner
+    inner, lstms = self:create_encoder(rho, i+1)
+    table.insert(lstms,1,lstm)
+    --attention is only used in middle layer --> pipe it through this layer with Identity
+    encoder:add(nn.ParallelTable():add(lstm):add(nn.Identity()))
+    local concat = nn.ConcatTable()
+    concat:add(nn.SelectTable(1))
+    concat:add(dplm.SkipAccumulateInputModule(skip, inner, zeros))
+    encoder:add(concat)
+    encoder:add(nn.FlattenTable()) --so we do not have to join attention
+    encoder:add(nn.JoinTable(2))
+    inputSize = hiddenSize[i+1]+hiddenSize[i]
+    if i == #hiddenSize-1 then inputSize = inputSize + hiddenSize[i+1] end --also add attention
+    local dec_lstm = nn.FastLSTM(inputSize, hiddenSize[i], rho)
+    encoder:add(dec_lstm)
+    table.insert(lstms,dec_lstm)
+  else
+    -- input is lower layer input and to_attend table
+    if i == 1 then
+      lstm = nn.FastLSTM(inputSize, hiddenSize[i], rho)
+    else
+      lstm = nn.AttentionLSTM(inputSize, hiddenSize[i], rho)
+    end
+    encoder:add(nn.ParallelTable():add(lstm):add(nn.Identity())) -- apply lstm before attention
+    encoder:add(
+      nn.ConcatTable():add(
+        nn.SelectTable(1) -- output of lstm
+      ):add(
+        controlledAttentionAlreadyProjected(hiddenSize[i], hiddenSize[i], self._interactionSize)  -- attention
+      )
+    )
+
+    lstms = {lstm}
+  end
+
+  return encoder, lstms
+end
+
 
 -------------Attention SkipEncoder->SkipDecoder as Module ------------------
 --[[
@@ -150,21 +258,23 @@ end
 --]]
 
 local AttentionSkipStackedLSTMEncDec, parent =
-  torch.class('dplm.AttentionSkipStackedLSTMEncDec','dplm.SkipStackedLSTM')
+  torch.class('dplm.AttentionSkipStackedLSTMEncDec','dplm.SkipStackedLSTMDecoder')
 
 
-function AttentionSkipStackedLSTMEncDec:__init(hiddenSize,vocabularySize,dropout,skip)
-  parent.__init(self,hiddenSize,vocabularySize,dropout,skip)
-
-  self._encoder = self.module
-  self._decoder = self:create_decoder(hiddenSize,vocabularySize,dropout,skip)
+function AttentionSkipStackedLSTMEncDec:__init(hiddenSize, vocabularySize, attInteractionSize, skip, dropout, tie)
+  parent.__init(self,hiddenSize,vocabularySize,skip,dropout)
+  self._interaction_size = attInteractionSize or hiddenSize[#hiddenSize]/10
+  self._decoder = self.module
+  --create encoder of same shape
+  self._encoder = dplm.SkipStackedLSTM(hiddenSize,vocabularySize,dropout,skip)
 
   -- real decoder is composed of encoder and decoder
   local enc_input = nn.Identity()()
-  local attention_input = nn.Identity()()
   local decodingMask = nn.Identity()()
   local e = self._encoder({enc_input,decodingMask})
-  local d = self._decoder({e,attention_input})
+  local attention_input = nn.Identity()()
+  local proj_attention = nn.Sequencer(nn.LinearNoBias(hiddenSize[#hiddenSize], self._interaction_size))(attention_input)
+  local d = self._decoder({e,proj_attention})
   self.module = nn.gModule({enc_input, attention_input, decodingMask},{d})
 
   self.module:remember('both')
@@ -177,38 +287,69 @@ function AttentionSkipStackedLSTMEncDec:__init(hiddenSize,vocabularySize,dropout
   local mask = nn.Identity()()
   local select = nn.SelectTable(#self._hiddenSize)(encoder({input,mask}))
   self._sharedEncoder = nn.gModule({input,mask},{select})
-  self:tie_parameters()
   self.modules[2] = self._sharedEncoder
+  if tie then self:tie_parameters() end
 end
 
-function AttentionSkipStackedLSTMEncDec:create_decoder(hiddenSize,vocabularySize,dropout, skip)
-  local dec_input = nn.Identity()() -- table of tensors
-  local to_attend = nn.Identity()() -- table of tensors
-  local enc_outs = {dec_input:split(#hiddenSize) }
-  local inputSize = hiddenSize[#hiddenSize]
-  local lastInput = enc_outs[#hiddenSize]
+function AttentionSkipStackedLSTMEncDec:create_encoder(rho, i)
+  rho = rho or 1
+  i = i or 1
+  local hiddenSize = self._hiddenSize
+  local skip = self._skip
+  --actual encoder
+  local encoder = nn.Sequential()
+  local inputSize = hiddenSize[i-1] or hiddenSize[i]
 
-  --for each element in lastInput calculate an attention
-  local attention = controlledMultiAttention(inputSize,inputSize,math.ceil(inputSize/10))({to_attend, lastInput})
-  lastInput = nn.Sequencer(nn.JoinTable(2,2))(nn.ZipTable()({lastInput, attention}))
-  inputSize = 2*inputSize
-  for i=#hiddenSize-1,1,-1 do
-    local hiddenSize = hiddenSize[i]
-    local zip = nn.ZipWithSkipTable(skip)({enc_outs[i],lastInput})
-    local join = nn.Sequencer(nn.JoinTable(2))(zip)
-    lastInput = nn.Sequencer(nn.FastLSTM(inputSize+hiddenSize, hiddenSize))(join)
-    inputSize = hiddenSize
+  -- recurrent layer
+  local lstms
+  local lstm
+
+  if i < #hiddenSize then
+    if i == 1 then
+      lstm = nn.FastLSTM(inputSize, hiddenSize[i], rho)
+    else
+      lstm = nn.AttentionLSTM(inputSize, hiddenSize[i], rho)
+    end
+    --attention is only used in middle layer
+    encoder:add(lstm)
+    local zeros = {torch.zeros(hiddenSize[i+1])}
+    local inner
+    inner, lstms = self:create_encoder(rho, i+1)
+    table.insert(lstms,1,lstm)
+
+    encoder:add(nn.ParallelTable():add(lstm):add(nn.Identity()))
+
+    local concat = nn.ConcatTable()
+    concat:add(nn.SelectTable(1))
+    concat:add(dplm.SkipAccumulateInputModule(skip, inner, zeros))
+    encoder:add(concat)
+    encoder:add(nn.FlattenTable()) --so we do not have to join attention
+    encoder:add(nn.JoinTable(2))
+    inputSize = hiddenSize[i+1]+hiddenSize[i]
+    if i == #hiddenSize-1 then inputSize = inputSize + hiddenSize[i+1] end --also add attention
+    local dec_lstm = nn.FastLSTM(inputSize, hiddenSize[i], rho)
+    encoder:add(dec_lstm)
+    table.insert(lstms,dec_lstm)
+  else
+    -- input is lower layer input and to_attend table
+    if i == 1 then
+      lstm = nn.FastLSTM(inputSize+hiddenSize[i], hiddenSize[i], rho)
+    else
+      lstm = nn.AttentionLSTM(inputSize+hiddenSize[i], hiddenSize[i], rho)
+    end
+    encoder:add(nn.ParallelTable():add(lstm):add(nn.Identity())) -- apply lstm before attention
+    encoder:add(
+      nn.ConcatTable():add(
+        nn.SelectTable(1) -- output of lstm
+      ):add(
+        controlledAttention(hiddenSize[i],hiddenSize[i],self._interaction_size)  -- attention
+      )
+    )
+
+    lstms = {lstm}
   end
 
-  local softmax = nn.Sequential()
-  if dropout then
-    softmax:add(nn.Dropout(dropout))
-  end
-  softmax:add(nn.Linear(inputSize, vocabularySize))
-  softmax:add(nn.LogSoftMax())
-
-  local out = nn.Sequencer(softmax)(lastInput)
-  return nn.gModule({dec_input, to_attend}, {out})
+  return encoder, lstms
 end
 
 function AttentionSkipStackedLSTMEncDec:updateOutput(input)

@@ -16,6 +16,7 @@ torch.include('dplm', 'model/AttentionLSTM.lua')
 torch.include('dplm', 'model/Attention.lua')
 torch.include('dplm', 'model/AttentionalSkipStackedLSTM.lua')
 torch.include('dplm', 'model/TableModules.lua')
+torch.include('dplm', 'model/SkipModule.lua')
 
 -- Disambiguation
 torch.include('dplm', 'el/DBMap.lua')

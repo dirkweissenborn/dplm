@@ -1,31 +1,68 @@
 
+-- creates gModule with Input: {Control Tensor, {to_attend table, to_attend_projections}} ; Output: Attention
+function controlledAttentionAlreadyProjected(size, control_size, interaction_size)
+  control_size = control_size or size
+  interaction_size = interaction_size or size
+
+  local module = nn.Sequential()
+  -- calculate projection to interaction layer only for controller because already done for to_attend
+
+  module:add(
+    nn.ConcatTable():add(
+      nn.Sequential():add(
+        nn.ParallelTable():add(
+          nn.Linear(control_size,interaction_size)
+        ):add(
+          nn.SelectTable(2)
+        ) --{controller_projections,to_attend_projections}
+      ):add(
+        nn.ZipTableWithTensor()
+      ):add(
+        nn.Sequencer(nn.Sequential():add(nn.CAddTable()):add(nn.Tanh()):add(nn.LinearNoBias(interaction_size,1)))
+      ):add(
+        nn.JoinTable(2,2)
+      ):add(
+        nn.SoftMax()
+      )
+    ):add(
+      nn.Sequential():add(nn.SelectTable(2)):add(nn.SelectTable(1)) --to attend
+    )
+  ):add(nn.FMixtureTable())
+
+  return module
+end
+
 -- creates gModule with Input: {Table of attendees, Control Tensor} ; Output: Attention
 function controlledAttention(size, control_size, interaction_size)
   control_size = control_size or size
   interaction_size = interaction_size or size
 
-  --Input
-  local to_attend = nn.Identity()() --table of tensors
-  local control   = nn.Identity()() --single controller
+  local module = nn.Sequential()
 
-  -- Create inner module that is applied to each attendee
-  local input_part     = nn.Identity()()
-  local control_proj   = nn.Identity()()
+  -- calculate projection to interaction layer
+  module:add(
+    nn.ConcatTable():add(
+      nn.Sequential():add(
+        nn.ParallelTable():add(
+          nn.Linear(control_size,interaction_size)
+        ):add(
+          nn.Sequencer(nn.LinearNoBias(size,interaction_size))
+        ) --{controller,to_attend_projections}
+      ):add(
+        nn.ZipTableWithTensor()
+      ):add(
+        nn.Sequencer(nn.Sequential():add(nn.CAddTable()):add(nn.Tanh()):add(nn.LinearNoBias(interaction_size,1)))
+      ):add(
+        nn.JoinTable(2,2)
+      ):add(
+        nn.SoftMax()
+      )
+    ):add(
+      nn.SelectTable(2) --to attend
+    )
+  ):add(nn.FMixtureTable())
 
-  local part_proj      = nn.LinearNoBias(size, interaction_size)(input_part)
-  local proj_out       = nn.Tanh()(nn.CAddTable()({part_proj,control_proj}))
-  local score          = nn.LinearNoBias(size,1)(proj_out)
-  local proj_m         = nn.gModule({input_part,control_proj},{score})
-
-  -- Use sequencer to apply proj to all attendees and then join scores
-  local control_p      = nn.Linear(control_size,interaction_size)(control)
-  local zip            = nn.ZipTableWithTensor()({to_attend, control_p})
-  local scores         = nn.JoinTable(2,2)(nn.Sequencer(proj_m)(zip))
-
-  local softmax        = nn.SoftMax()(scores)
-  local attention      = nn.FMixtureTable()({softmax, to_attend})
-
-  return nn.gModule({to_attend,control},{attention})
+  return module
 end
 
 -- creates gModule with Input: {Table of attendees, Table of control Tensors} ;
@@ -61,7 +98,7 @@ function controlledMultiAttention(size, control_size, interaction_size)
   local scoresAndAttend= nn.ZipTableWithTable()({softmax,to_attend})
   local attentions     = nn.Sequencer(nn.FMixtureTable())(scoresAndAttend)
 
-  return nn.gModule({to_attend,control},{attentions})
+  return nn.gModule({control, to_attend},{attentions})
 end
 
 function simpleAttention(size)
@@ -84,4 +121,37 @@ function FMixtureTable:updateOutput(input)
     self.size[self.dim] = gaterInput:size(self.dimG)
   end
   return parent.updateOutput(self,input)
+end
+
+
+local ZipTableWithTensor, parent = torch.class("nn.ZipTableWithTensor","nn.Module")
+
+function ZipTableWithTensor:__init()
+end
+
+function ZipTableWithTensor:updateOutput(input)
+  local tab = input[2]
+  local ten = input[1]
+  self.output = {}
+  for _,v in ipairs(tab) do table.insert(self.output, {v,ten}) end
+  return self.output
+end
+
+function ZipTableWithTensor:updateGradInput(input, gradOutput)
+  local ten = input[1]
+  self.gradInput = self.gradInput or {}
+  self.gradInput[2] = self.gradInput[2] and _.slice(self.gradInput[2],1,#gradOutput) or {}
+  self.gradInput[1] = self.gradInput[1] or ten:clone()
+  self.gradInput[1]:resizeAs(ten):zero()
+  for i,v in ipairs(gradOutput) do
+    local table_t = self.gradInput[2][i]
+    if not table_t then
+      table_t = v[2]:clone()
+      self.gradInput[2][i] = table_t
+    else
+      table_t:resizeAs(v[2]):copy(v[2])
+    end
+    self.gradInput[1]:add(v[1])
+  end
+  return self.gradInput
 end
