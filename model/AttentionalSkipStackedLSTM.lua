@@ -1,5 +1,16 @@
 -------------Attentional Encoder as Module ------------------
 
+
+--[[
+-- layers are stacked with skips. Lets say 3 layers are defined with skip 2, then the 1st layer
+--emits new output at every timestep, 2nd layer updates its output every 2nd timestep
+--and 3rd layer updates its output only every 4th timestep. Input for skip layers are
+--all skipped inputs, so for 2nd layer it would always be 2 tensors and for 3rd layer 4.
+--Attention is applied on these inputs to softly select only one input of the previously
+--skipped timesteps. This module is useful for example for character based LMs where we do not
+--want to update every layer at every timestep.
+--Input is a tensor of indices (like in LMs)
+--]]
 local SkipStackedLSTM, parent = torch.class('dplm.SkipStackedLSTM','nn.Container')
 
 function SkipStackedLSTM:__init(hiddenSize, vocabularySize, skip, dropout, rho)
@@ -94,6 +105,14 @@ end
 
 ------------- Skip Decoder as Module ------------------
 
+--[[
+--Similar to SkipStackedLSTM, with the only difference being that each layer is duplicated at top of Stack
+--Example: 3 layers defined in hiddenSize are created exactly as in SkipStackedLSTM (layers 1,2,3) then:
+-- * there will be a 4th layer connected to layer 2 and 3 with same specs as layer 2 (same skip and size etc)
+-- * there will be a 5th layer connected to layer 1 and 4 with same specs as layer 1 (same skip and size etc)
+--Note: there is a shortcut from layer 1 - 5 where information from input can flow directly
+--Input: Tensor of indices
+--]]
 local SkipStackedLSTMDecoder, parent =
   torch.class('dplm.SkipStackedLSTMDecoder','dplm.SkipStackedLSTM')
 
@@ -148,8 +167,20 @@ function SkipStackedLSTMDecoder:create_encoder(rho, i)
   return encoder, lstms
 end
 
+
+
 ------------- Attentional Skip Decoder as Module ------------------
 
+-- This is a SkipStackedLSTMDecoder with attention at the middle layer. Let's say 3 layers are defined in
+-- hiddenSize -> attention applied on top of layer 3 and concatenated with its output.
+-- input is table: {input indices, {{to attend}, {to attend projected}}}
+-- to attend projected is preprocessed projection of to_attend to interaction size.
+-- This projection is used during attention. We use it as input here to not compute
+-- the projection at every timestep because to_attend usually stays the same for an entire decoder sequence.
+-- This class is used in SkipAttentionEncoderDecoder
+
+-- Input is table: {indices, attention_stuff}, where indices is tensor and attention_stuff is
+-- {table of tensors to attend on, table of projected  tensors to attend on}
 local AttentionSkipStackedLSTMDecoder, parent =
 torch.class('dplm.AttentionSkipStackedLSTMDecoder','dplm.SkipStackedLSTM')
 
@@ -161,16 +192,7 @@ function AttentionSkipStackedLSTMDecoder:__init(hiddenSize, vocabularySize, skip
   self._skip = skip
   self._dropout = dropout
   self.module = self:create_input()
-  -- input is table: {input indices, {to attend,...}}
-  self.module = nn.Sequential():add(
-    nn.ParallelTable():add(self.module):add(
-      nn.ConcatTable():add(
-        nn.Identity()
-      ):add( --already calculateprojections beforehand, to not calculate it in every timestep
-        nn.Sequencer(nn.LinearNoBias(hiddenSize[#hiddenSize], self._interactionSize))
-      )
-    )
-  )
+  self.module = nn.Sequential():add(nn.ParallelTable():add(self.module):add(nn.Identity()))
   self._encoder, self._lstms = self:create_encoder(rho)
   self.module:add(self._encoder)
   if self._dropout then
@@ -182,8 +204,8 @@ function AttentionSkipStackedLSTMDecoder:__init(hiddenSize, vocabularySize, skip
   self.modules[1] = self.module
 end
 
--- input is table: {input, to_attend}, where input is either tensor or table depending on i and to_attend is table
--- of tensor we should put attention on
+-- input is table: {input, attention_stuff}, where input is either tensor or table depending on i and attention_stuff
+-- is only used at last layer
 function AttentionSkipStackedLSTMDecoder:create_encoder(rho, i)
   rho = rho or 1
   i = i or 1
@@ -193,8 +215,8 @@ function AttentionSkipStackedLSTMDecoder:create_encoder(rho, i)
   local encoder = nn.Sequential()
   if i > 1 then --input correction
     -- after SkipAccumulateInputModule we end up with a repitition of real input and to_attend
-    -- e.g., { {input1, to_attend}, {input2, to_attend}, {input3, to_attend}, ...}
-    -- we need { {input1, input2, input3}, to_attend}
+    -- e.g., { {input1, attention_stuff}, {input2, attention_stuff}, {input3, attention_stuff}, ...}
+    -- we need { {input1, input2, input3}, attention_stuff}
     local input_correct = nn.Sequencer(nn.SelectTable(1))
     local to_attend_correct = nn.Sequential():add(nn.SelectTable(1)):add(nn.SelectTable(2))
     encoder:add(nn.ConcatTable():add(input_correct):add(to_attend_correct))
@@ -230,7 +252,6 @@ function AttentionSkipStackedLSTMDecoder:create_encoder(rho, i)
     encoder:add(dec_lstm)
     table.insert(lstms,dec_lstm)
   else
-    -- input is lower layer input and to_attend table
     if i == 1 then
       lstm = nn.FastLSTM(inputSize, hiddenSize[i], rho)
     else
@@ -241,6 +262,7 @@ function AttentionSkipStackedLSTMDecoder:create_encoder(rho, i)
       nn.ConcatTable():add(
         nn.SelectTable(1) -- output of lstm
       ):add(
+        -- assumes input to be {}
         controlledAttentionAlreadyProjected(hiddenSize[i], hiddenSize[i], self._interactionSize)  -- attention
       )
     )
@@ -257,11 +279,12 @@ end
 -- Attention is based on the last layer of the encoder (which is used for encoding, but also during decoding)
 --]]
 
-local AttentionSkipStackedLSTMEncDec, parent =
-  torch.class('dplm.AttentionSkipStackedLSTMEncDec','dplm.SkipStackedLSTMDecoder')
+local SkipAttentionEncoderDecoder, parent =
+  torch.class('dplm.SkipAttentionEncoderDecoder','dplm.SkipStackedLSTMDecoder')
 
-
-function AttentionSkipStackedLSTMEncDec:__init(hiddenSize, vocabularySize, attInteractionSize, skip, dropout, tie)
+--TODO refactoring: should be composed of SkipStackedLSTMDecoder and SkipStackedLSTM
+--[[
+function SkipAttentionEncoderDecoder:__init(hiddenSize, vocabularySize, attInteractionSize, skip, dropout, tie)
   parent.__init(self,hiddenSize,vocabularySize,skip,dropout)
   self._interaction_size = attInteractionSize or hiddenSize[#hiddenSize]/10
   self._decoder = self.module
@@ -291,68 +314,7 @@ function AttentionSkipStackedLSTMEncDec:__init(hiddenSize, vocabularySize, attIn
   if tie then self:tie_parameters() end
 end
 
-function AttentionSkipStackedLSTMEncDec:create_encoder(rho, i)
-  rho = rho or 1
-  i = i or 1
-  local hiddenSize = self._hiddenSize
-  local skip = self._skip
-  --actual encoder
-  local encoder = nn.Sequential()
-  local inputSize = hiddenSize[i-1] or hiddenSize[i]
-
-  -- recurrent layer
-  local lstms
-  local lstm
-
-  if i < #hiddenSize then
-    if i == 1 then
-      lstm = nn.FastLSTM(inputSize, hiddenSize[i], rho)
-    else
-      lstm = nn.AttentionLSTM(inputSize, hiddenSize[i], rho)
-    end
-    --attention is only used in middle layer
-    encoder:add(lstm)
-    local zeros = {torch.zeros(hiddenSize[i+1])}
-    local inner
-    inner, lstms = self:create_encoder(rho, i+1)
-    table.insert(lstms,1,lstm)
-
-    encoder:add(nn.ParallelTable():add(lstm):add(nn.Identity()))
-
-    local concat = nn.ConcatTable()
-    concat:add(nn.SelectTable(1))
-    concat:add(dplm.SkipAccumulateInputModule(skip, inner, zeros))
-    encoder:add(concat)
-    encoder:add(nn.FlattenTable()) --so we do not have to join attention
-    encoder:add(nn.JoinTable(2))
-    inputSize = hiddenSize[i+1]+hiddenSize[i]
-    if i == #hiddenSize-1 then inputSize = inputSize + hiddenSize[i+1] end --also add attention
-    local dec_lstm = nn.FastLSTM(inputSize, hiddenSize[i], rho)
-    encoder:add(dec_lstm)
-    table.insert(lstms,dec_lstm)
-  else
-    -- input is lower layer input and to_attend table
-    if i == 1 then
-      lstm = nn.FastLSTM(inputSize+hiddenSize[i], hiddenSize[i], rho)
-    else
-      lstm = nn.AttentionLSTM(inputSize+hiddenSize[i], hiddenSize[i], rho)
-    end
-    encoder:add(nn.ParallelTable():add(lstm):add(nn.Identity())) -- apply lstm before attention
-    encoder:add(
-      nn.ConcatTable():add(
-        nn.SelectTable(1) -- output of lstm
-      ):add(
-        controlledAttention(hiddenSize[i],hiddenSize[i],self._interaction_size)  -- attention
-      )
-    )
-
-    lstms = {lstm}
-  end
-
-  return encoder, lstms
-end
-
-function AttentionSkipStackedLSTMEncDec:updateOutput(input)
+function SkipAttentionEncoderDecoder:updateOutput(input)
   local enc_input = input[1]
   local dec_input = input[2]
   local encoder = self:encoder()
@@ -371,7 +333,7 @@ function AttentionSkipStackedLSTMEncDec:updateOutput(input)
   end
 end
 
-function AttentionSkipStackedLSTMEncDec:updateGradInput(input, gradOutput)
+function SkipAttentionEncoderDecoder:updateGradInput(input, gradOutput)
   local enc_input = input[1]
   local dec_input = input[2]
   local encoder = self:encoder()
@@ -386,7 +348,7 @@ function AttentionSkipStackedLSTMEncDec:updateGradInput(input, gradOutput)
   return {gi2[1],gi[1],gi[3]}
 end
 
-function AttentionSkipStackedLSTMEncDec:accGradParameters(input, gradOutput, scale)
+function SkipAttentionEncoderDecoder:accGradParameters(input, gradOutput, scale)
   local enc_input = input[1]
   local dec_input = input[2]
   local encoder = self:encoder()
@@ -400,7 +362,7 @@ function AttentionSkipStackedLSTMEncDec:accGradParameters(input, gradOutput, sca
   encoder:accGradParameters({enc_input, self.dummyMask}, self._to_attend_d, scale)
 end
 
-function AttentionSkipStackedLSTMEncDec:tie_parameters()
+function SkipAttentionEncoderDecoder:tie_parameters()
   local params,grads = self._encoder:parameters()
   local s_params,s_grads = self._sharedEncoder:parameters()
   for i,v in pairs(params) do
@@ -409,7 +371,7 @@ function AttentionSkipStackedLSTMEncDec:tie_parameters()
   end
 end
 
-function AttentionSkipStackedLSTMEncDec:encoder()
+function SkipAttentionEncoderDecoder:encoder()
   -- we clone the encoder, because the original encoder is part of the decoder
   if not self._sharedEncoder then
     local encoder  =  self._encoder:sharedClone()
@@ -423,3 +385,4 @@ function AttentionSkipStackedLSTMEncDec:encoder()
 
   return self._sharedEncoder
 end
+--]]
